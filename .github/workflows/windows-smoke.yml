@@ -22,6 +22,7 @@ jobs:
       matrix:
         os: [windows-2025, windows-2022, windows-11-arm]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
     defaults:
       run:
         shell: pwsh
@@ -40,7 +41,10 @@ jobs:
       - name: Install silently, as a standard user would (no administrator prompt)
         run: |
           $exe = (Get-ChildItem dl\RelaySetup-*.exe | Select-Object -First 1).FullName
-          $p = Start-Process $exe -ArgumentList '/S' -PassThru -Wait
+          # Wait for the installer alone: -Wait would also wait for the Relay
+          # it opens at the end, which keeps running.
+          $p = Start-Process $exe -ArgumentList '/S' -PassThru
+          if (-not $p.WaitForExit(180000)) { "install did not finish in 3 min" | Tee-Object -Append out\summary.txt; exit 1 }
           "install exit=$($p.ExitCode)" | Tee-Object -Append out\summary.txt
           if ($p.ExitCode -ne 0) { exit 1 }
 
@@ -114,7 +118,8 @@ jobs:
         continue-on-error: true
         run: |
           $exe = (Get-ChildItem dl\RelaySetup-*.exe | Select-Object -First 1).FullName
-          $p = Start-Process $exe -ArgumentList '/S' -PassThru -Wait
+          $p = Start-Process $exe -ArgumentList '/S' -PassThru
+          if (-not $p.WaitForExit(180000)) { "reinstall did not finish in 3 min" | Tee-Object -Append out\summary.txt }
           "reinstall exit=$($p.ExitCode)" | Tee-Object -Append out\summary.txt
           Start-Sleep 10
           Get-Process RelayApp, relayw, relayd -ErrorAction SilentlyContinue | Format-Table Name, Id, StartTime
@@ -124,7 +129,9 @@ jobs:
           $dir = "$env:LOCALAPPDATA\Programs\Relay"
           Copy-Item "$env:LOCALAPPDATA\Relay\Logs" out\logs -Recurse -ErrorAction SilentlyContinue
           Get-ChildItem "$env:LOCALAPPDATA\Relay" -Recurse -Filter *.log -ErrorAction SilentlyContinue | Copy-Item -Destination out\ -ErrorAction SilentlyContinue
-          Start-Process "$dir\Uninstall Relay.exe" -ArgumentList '/S' -Wait
+          # The uninstaller copies itself to %TEMP% and runs from there, so
+          # wait for the folder to go rather than for the first process.
+          Start-Process "$dir\Uninstall Relay.exe" -ArgumentList '/S'
           foreach ($i in 1..60) { if (-not (Test-Path $dir)) { break }; Start-Sleep 1 }
           Start-Sleep 3
           $bad = 0
