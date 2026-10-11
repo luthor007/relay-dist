@@ -1,0 +1,146 @@
+name: windows-smoke
+
+# Installs a Relay for Windows release on GitHub's Windows machines and checks
+# what a person would meet: the files, the Start menu, Settings > Apps, the
+# app's window, the engine answering, an install over an install, and an
+# uninstall that leaves nothing. Screenshots and logs are kept as artifacts.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag holding RelaySetup-*.exe (a draft is fine)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, windows-2022, windows-11-arm]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download the installer
+        run: |
+          gh release download "${{ inputs.tag }}" -R "${{ github.repository }}" -p "RelaySetup-*.exe" -D dl
+          New-Item -ItemType Directory -Force out | Out-Null
+          Get-ChildItem dl | Format-Table Name, Length
+          "os=$([Environment]::OSVersion.VersionString) arch=$env:PROCESSOR_ARCHITECTURE" | Tee-Object out\summary.txt
+          $wv = Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}' -ErrorAction SilentlyContinue
+          "webview2=$($wv.pv)" | Tee-Object -Append out\summary.txt
+
+      - name: Install silently, as a standard user would (no administrator prompt)
+        run: |
+          $exe = (Get-ChildItem dl\RelaySetup-*.exe | Select-Object -First 1).FullName
+          $p = Start-Process $exe -ArgumentList '/S' -PassThru -Wait
+          "install exit=$($p.ExitCode)" | Tee-Object -Append out\summary.txt
+          if ($p.ExitCode -ne 0) { exit 1 }
+
+      - name: Check what was installed
+        run: |
+          $dir = "$env:LOCALAPPDATA\Programs\Relay"
+          $bad = 0
+          foreach ($f in 'relay.exe','relayd.exe','relayw.exe','RelayApp.exe','WebView2Loader.dll','relay.ico','Uninstall Relay.exe') {
+            if (Test-Path "$dir\$f") { "ok   $f $((Get-Item "$dir\$f").Length)" } else { "MISSING $f"; $bad++ }
+          }
+          # The PE machine of relayd.exe: 0x8664 Intel/AMD, 0xAA64 ARM.
+          $b = [IO.File]::ReadAllBytes("$dir\relayd.exe"); $pe = [BitConverter]::ToInt32($b, 0x3C)
+          $m = '{0:X4}' -f [BitConverter]::ToUInt16($b, $pe + 4)
+          "relayd machine=0x$m on $env:PROCESSOR_ARCHITECTURE"
+          if (($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') -ne ($m -eq 'AA64')) { "WRONG ARCH"; $bad++ }
+          $lnk = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Relay.lnk"
+          if (Test-Path $lnk) { "ok   Start menu shortcut" } else { "MISSING Start menu shortcut"; $bad++ }
+          $u = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Relay' -ErrorAction SilentlyContinue
+          if ($u) { "ok   Settings > Apps: $($u.DisplayName) $($u.DisplayVersion) by $($u.Publisher)" } else { "MISSING uninstall entry"; $bad++ }
+          & "$dir\relay.exe" --version 2>&1 | Select-Object -First 3
+          "install-check bad=$bad" | Tee-Object -Append out\summary.txt
+          exit $bad
+
+      - name: The app opens its window
+        continue-on-error: true
+        run: |
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          function Shot($name) {
+            $s = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bmp = New-Object System.Drawing.Bitmap $s.Width, $s.Height
+            $g = [System.Drawing.Graphics]::FromImage($bmp)
+            $g.CopyFromScreen($s.Location, [System.Drawing.Point]::Empty, $s.Size)
+            $bmp.Save("out\$name.png"); $g.Dispose(); $bmp.Dispose()
+          }
+          Start-Sleep 12
+          Get-Process RelayApp, relayw, relayd -ErrorAction SilentlyContinue | Format-Table Name, Id, StartTime, MainWindowTitle
+          Shot "1-after-install"
+          $app = Get-Process RelayApp -ErrorAction SilentlyContinue
+          if (-not $app) {
+            "RelayApp not running after install; starting it" | Tee-Object -Append out\summary.txt
+            Start-Process "$env:LOCALAPPDATA\Programs\Relay\RelayApp.exe"; Start-Sleep 12; Shot "2-started-by-hand"
+            $app = Get-Process RelayApp -ErrorAction SilentlyContinue
+          }
+          "app running=$([bool]$app) title='$($app.MainWindowTitle)'" | Tee-Object -Append out\summary.txt
+          # A second launch must bring the same window forward, not open another.
+          Start-Process "$env:LOCALAPPDATA\Programs\Relay\RelayApp.exe"; Start-Sleep 5
+          "RelayApp processes after second launch=$(@(Get-Process RelayApp -ErrorAction SilentlyContinue).Count)" | Tee-Object -Append out\summary.txt
+          Shot "3-second-launch"
+
+      - name: The engine starts and answers
+        continue-on-error: true
+        run: |
+          $dir = "$env:LOCALAPPDATA\Programs\Relay"
+          & "$dir\relay.exe" service install 2>&1 | Tee-Object out\service-install.txt
+          $ok = $false
+          foreach ($i in 1..45) {
+            try { $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 http://127.0.0.1:8787/healthz; if ($r.StatusCode -eq 200) { $ok = $true; break } } catch {}
+            Start-Sleep 2
+          }
+          "relayd healthz=$ok" | Tee-Object -Append out\summary.txt
+          Get-Process relayw, relayd -ErrorAction SilentlyContinue | Format-Table Name, Id, Path
+          $run = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -ErrorAction SilentlyContinue).Relay
+          "run key='$run'" | Tee-Object -Append out\summary.txt
+          & "$dir\relay.exe" status 2>&1 | Tee-Object out\relay-status.txt
+          # Ending relayd: relayw starts another within a few seconds.
+          Get-Process relayd -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep 10
+          "relayd back after kill=$([bool](Get-Process relayd -ErrorAction SilentlyContinue))" | Tee-Object -Append out\summary.txt
+
+      - name: Install again over the running copy
+        continue-on-error: true
+        run: |
+          $exe = (Get-ChildItem dl\RelaySetup-*.exe | Select-Object -First 1).FullName
+          $p = Start-Process $exe -ArgumentList '/S' -PassThru -Wait
+          "reinstall exit=$($p.ExitCode)" | Tee-Object -Append out\summary.txt
+          Start-Sleep 10
+          Get-Process RelayApp, relayw, relayd -ErrorAction SilentlyContinue | Format-Table Name, Id, StartTime
+
+      - name: Uninstall leaves nothing
+        run: |
+          $dir = "$env:LOCALAPPDATA\Programs\Relay"
+          Copy-Item "$env:LOCALAPPDATA\Relay\Logs" out\logs -Recurse -ErrorAction SilentlyContinue
+          Get-ChildItem "$env:LOCALAPPDATA\Relay" -Recurse -Filter *.log -ErrorAction SilentlyContinue | Copy-Item -Destination out\ -ErrorAction SilentlyContinue
+          Start-Process "$dir\Uninstall Relay.exe" -ArgumentList '/S' -Wait
+          foreach ($i in 1..60) { if (-not (Test-Path $dir)) { break }; Start-Sleep 1 }
+          Start-Sleep 3
+          $bad = 0
+          foreach ($p in $dir, "$env:LOCALAPPDATA\Relay", "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Relay.lnk") {
+            if (Test-Path $p) { "LEFT $p"; $bad++ } else { "gone $p" }
+          }
+          if (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Relay' -ErrorAction SilentlyContinue) { "LEFT uninstall entry"; $bad++ }
+          if ((Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -ErrorAction SilentlyContinue).Relay) { "LEFT run key"; $bad++ }
+          $procs = Get-Process RelayApp, relayw, relayd -ErrorAction SilentlyContinue
+          if ($procs) { "LEFT running: $($procs.Name -join ',')"; $bad++ }
+          "uninstall-check bad=$bad" | Tee-Object -Append out\summary.txt
+          exit $bad
+
+      - name: Keep screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-${{ matrix.os }}
+          path: out
