@@ -156,6 +156,14 @@ jobs:
               return @([Windows.UI.Notifications.ToastNotificationManager]::History.GetHistory('glass.relay.app')).Count
             } catch { return "unreadable: $($_.Exception.Message)" }
           }
+          # The newest notification address not yet used (toasts.json lists the
+          # newest first and marks a used one "spent").
+          function FreshNonce {
+            if (-not (Test-Path "$R\toasts.json")) { return $null }
+            $recs = @(Get-Content "$R\toasts.json" -Raw | ConvertFrom-Json)
+            $f = $recs | Where-Object { -not $_.spent } | Select-Object -First 1
+            if ($f) { return $f.nonce } else { return $null }
+          }
           function Press($name) {
             $e = Find $name
             if (-not $e) { return "not found" }
@@ -275,6 +283,7 @@ jobs:
           [IO.File]::WriteAllText("$R\app.json", ($saved | ConvertTo-Json -Compress))
           [Environment]::SetEnvironmentVariable('RELAY_APP_NO_SIGN_IN', '1', 'User')
           $env:RELAY_APP_NO_SIGN_IN = '1'
+          Add-Content -Path $env:GITHUB_ENV -Value 'RELAY_APP_NO_SIGN_IN=1'
           $n = (LogLines).Count
           Start-Process $App
           $loaded = WaitLog 'desk: the console loaded' $n 60
@@ -313,13 +322,8 @@ jobs:
           Shot "08-toast"
           Note "notification centre: Relay's notifications before=$before after=$(ToastHistory)"
           LogSince $n | Select-String 'notify:' | ForEach-Object { Note "  $_" }
-          $nonce = $null
-          if (Test-Path "$R\toasts.json") {
-            $raw = Get-Content "$R\toasts.json" -Raw
-            Note "toasts.json=$($raw -replace '\s+', ' ')"
-            $m = [regex]::Match($raw, '[0-9a-f]{32}')
-            if ($m.Success) { $nonce = $m.Value }
-          } else { Note "toasts.json MISSING" }
+          if (Test-Path "$R\toasts.json") { Note "toasts.json=$((Get-Content "$R\toasts.json" -Raw) -replace '\s+', ' ')" } else { Note "toasts.json MISSING" }
+          $nonce = FreshNonce
           if (-not $nonce) { $nonce = '0123456789abcdef0123456789abcdef' }
           Set-Content -Path out\nonce.txt -Value $nonce
           # Its address with the app running and the desk closed: the desk comes forward.
@@ -340,14 +344,17 @@ jobs:
           # opens. A fresh notification, since each address is acted on once.
           Start-Process $App -ArgumentList '--test-toast'
           Start-Sleep 4
-          $m = [regex]::Matches((Get-Content "$R\toasts.json" -Raw), '[0-9a-f]{32}')
-          if ($m.Count) { $nonce = $m[$m.Count - 1].Value }
+          $fresh = FreshNonce
+          if ($fresh) { $nonce = $fresh } else { Note "no fresh notification address" }
           Quit
           $n = (LogLines).Count
           Start-Process "relay-app:toast?n=$nonce&a=open"
-          $loaded = WaitLog 'desk: the console loaded' $n 45
+          $loaded = WaitLog 'desk: the console loaded|desk: a sign-in answers instead' $n 45
           Start-Sleep 3
-          Note "address, app not running: RelayApp=$((Procs).Count) desk loaded=$loaded front=$([W]::Front())"
+          $what = 'none'
+          if (LogSince $n | Select-String -Quiet 'desk: the console loaded') { $what = 'desk' }
+          elseif ((LogSince $n | Select-String -Quiet 'a sign-in answers instead') -and (Find 'Sign in' 5)) { $what = 'sign-in' }
+          Note "address, app not running: RelayApp=$((Procs).Count) opened=$what front=$([W]::Front())"
           LogSince $n | Select-String 'notify:|desk:' | ForEach-Object { Note "  $_" }
           Shot "10-address-not-running"
 
@@ -358,6 +365,7 @@ jobs:
           $n = (LogLines).Count
           CloseDesk | Out-Null
           Start-Sleep 2
+          if ([W]::Front() -like '*SearchHost*') { [System.Windows.Forms.SendKeys]::SendWait('{ESC}'); Start-Sleep 1; Note "closed Windows Search first; front=$([W]::Front())" }
           [System.Windows.Forms.SendKeys]::SendWait('% ')
           Start-Sleep 3
           Note "after Alt+Space front=$([W]::Front())"
@@ -472,7 +480,7 @@ jobs:
           # Each line that means a person would meet something broken.
           $wrong = 'check bad=[1-9]|did not finish|MISSING|found=False|inside=False|desk loaded=False|ready=False|' +
                    'after second launch=[02-9]|healthz=False|back after kill=False|refused=False|field after typing=''''|' +
-                   'not running: RelayApp=0|activity switch=False|exit=[1-9]|report lines=0|console=False'
+                   'not running: RelayApp=0|opened=none|activity switch=False|exit=[1-9]|report lines=0|console=False'
           $bad = @($sum | Select-String -Pattern $wrong)
           $bad | ForEach-Object { "FAILED: $_" }
           if (-not ($sum | Select-String -Quiet 'uninstall-check bad=0')) { "FAILED: the uninstall check did not pass"; exit 1 }
