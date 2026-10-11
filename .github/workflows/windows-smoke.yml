@@ -43,17 +43,20 @@ jobs:
           gh release download "${{ inputs.tag }}" -R "${{ github.repository }}" -p "RelaySetup*.exe" -D dl
           New-Item -ItemType Directory -Force out | Out-Null
           Get-ChildItem dl | Format-Table Name, Length
-          "os=$([Environment]::OSVersion.VersionString) arch=$env:PROCESSOR_ARCHITECTURE" | Tee-Object out\summary.txt
+          function Note($s) { $s; Add-Content -Path out\summary.txt -Value $s -Encoding UTF8 }
+          Note "os=$([Environment]::OSVersion.VersionString) arch=$env:PROCESSOR_ARCHITECTURE"
           $wv = Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}' -ErrorAction SilentlyContinue
-          "webview2=$($wv.pv)" | Tee-Object -Append out\summary.txt
+          Note "webview2=$($wv.pv)"
           $hosts = "$env:SystemRoot\System32\drivers\etc\hosts"
           Add-Content -Path $hosts -Value "`r`n127.0.0.1 relay.glass"
           ipconfig /flushdns | Out-Null
-          "relay.glass resolves to $([Net.Dns]::GetHostAddresses('relay.glass') -join ',')" | Tee-Object -Append out\summary.txt
+          Note "relay.glass resolves to $([Net.Dns]::GetHostAddresses('relay.glass') -join ',')"
           # What every later step shares: screenshots, the foreground window,
           # UI Automation over the app's windows (WebView2's pages included),
           # and the app's log.
           @'
+          # A failed line is reported and the step goes on: every check is wanted.
+          $ErrorActionPreference = 'Continue'
           Add-Type -AssemblyName System.Windows.Forms, System.Drawing, UIAutomationClient, UIAutomationTypes
           if (-not ('W' -as [type])) {
           Add-Type @"
@@ -77,7 +80,7 @@ jobs:
           $R = "$env:LOCALAPPDATA\Relay"
           $App = "$env:LOCALAPPDATA\Programs\Relay\RelayApp.exe"
           $Log = "$R\Logs\relayapp.log"
-          function Note($s) { $s | Tee-Object -Append out\summary.txt }
+          function Note($s) { $s; Add-Content -Path out\summary.txt -Value $s -Encoding UTF8 }
           function Shot($name) {
             $s = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
             $bmp = New-Object System.Drawing.Bitmap $s.Width, $s.Height
@@ -124,16 +127,18 @@ jobs:
 
       - name: Install silently, as a standard user would (no administrator prompt)
         run: |
+          . .\h.ps1
           $exe = (Get-ChildItem dl\RelaySetup*.exe | Select-Object -First 1).FullName
           # Wait for the installer alone: -Wait would also wait for the Relay
           # it opens at the end, which keeps running.
           $p = Start-Process $exe -ArgumentList '/S' -PassThru
-          if (-not $p.WaitForExit(180000)) { "install did not finish in 3 min" | Tee-Object -Append out\summary.txt; exit 1 }
-          "install exit=$($p.ExitCode)" | Tee-Object -Append out\summary.txt
+          if (-not $p.WaitForExit(180000)) { Note "install did not finish in 3 min"; exit 1 }
+          Note "install exit=$($p.ExitCode)"
           if ($p.ExitCode -ne 0) { exit 1 }
 
       - name: Check what was installed
         run: |
+          . .\h.ps1
           $dir = "$env:LOCALAPPDATA\Programs\Relay"
           $bad = 0
           foreach ($f in 'relay.exe','relayd.exe','relayw.exe','RelayApp.exe','WebView2Loader.dll','relay.ico','Uninstall Relay.exe') {
@@ -146,7 +151,9 @@ jobs:
             "$f machine=0x$m on $env:PROCESSOR_ARCHITECTURE"
             if (($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') -ne ($m -eq 'AA64')) { "WRONG ARCH $f"; $bad++ }
           }
-          "file version=$((Get-Item "$dir\RelayApp.exe").VersionInfo.FileVersion)"
+          $fv = (Get-Item "$dir\RelayApp.exe").VersionInfo.FileVersion
+          Note "RelayApp.exe file version=$fv"
+          if ($fv -eq '0.0.0') { "RelayApp.exe has no version"; $bad++ }
           $lnk = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Relay.lnk"
           if (Test-Path $lnk) { "ok   Start menu shortcut" } else { "MISSING Start menu shortcut"; $bad++ }
           $u = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Relay' -ErrorAction SilentlyContinue
@@ -155,8 +162,7 @@ jobs:
           if ($cmd -like '*RelayApp.exe*--activate*') { "ok   relay-app: opens $cmd" } else { "MISSING relay-app: protocol ($cmd)"; $bad++ }
           $aumid = Get-ItemProperty 'HKCU:\Software\Classes\AppUserModelId\glass.relay.app' -ErrorAction SilentlyContinue
           if ($aumid.DisplayName -eq 'Relay') { "ok   notifications are named Relay" } else { "MISSING notification name"; $bad++ }
-          & "$dir\relay.exe" --version 2>&1 | Select-Object -First 3
-          "install-check bad=$bad" | Tee-Object -Append out\summary.txt
+          Note "install-check bad=$bad"
           exit $bad
 
       - name: The first run, its consent line, and one window
@@ -358,6 +364,7 @@ jobs:
 
       - name: Uninstall leaves nothing
         run: |
+          . .\h.ps1
           $dir = "$env:LOCALAPPDATA\Programs\Relay"
           Copy-Item "$env:LOCALAPPDATA\Relay\Logs" out\logs -Recurse -ErrorAction SilentlyContinue
           foreach ($f in 'app.json','app-settings.json','consent.json','toasts.json') { Copy-Item "$env:LOCALAPPDATA\Relay\$f" out\ -ErrorAction SilentlyContinue }
@@ -378,7 +385,7 @@ jobs:
           if ($creds) { "LEFT credentials: $creds"; $bad++ } else { "gone credentials" }
           $procs = Get-Process RelayApp, relayw, relayd -ErrorAction SilentlyContinue
           if ($procs) { "LEFT running: $($procs.Name -join ',')"; $bad++ }
-          "uninstall-check bad=$bad" | Tee-Object -Append out\summary.txt
+          Note "uninstall-check bad=$bad"
           exit $bad
 
       - name: Keep screenshots and logs
