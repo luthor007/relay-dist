@@ -137,6 +137,7 @@ jobs:
           if ($p.ExitCode -ne 0) { exit 1 }
 
       - name: Check what was installed
+        continue-on-error: true
         run: |
           . .\h.ps1
           $dir = "$env:LOCALAPPDATA\Programs\Relay"
@@ -363,6 +364,7 @@ jobs:
           Shot "16-after-reinstall"
 
       - name: Uninstall leaves nothing
+        continue-on-error: true
         run: |
           . .\h.ps1
           $dir = "$env:LOCALAPPDATA\Programs\Relay"
@@ -394,3 +396,13 @@ jobs:
         with:
           name: smoke-${{ matrix.os }}
           path: out
+
+      # Every check above reports and goes on; this is where a bad one fails
+      # the run.
+      - name: Verdict
+        run: |
+          $sum = Get-Content out\summary.txt
+          $bad = @($sum | Select-String -Pattern 'check bad=[1-9]|did not finish|MISSING')
+          $bad | ForEach-Object { "FAILED: $_" }
+          if (-not ($sum | Select-String -Quiet 'uninstall-check bad=0')) { "FAILED: the uninstall check did not pass"; exit 1 }
+          exit $bad.Count
