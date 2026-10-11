@@ -2,14 +2,21 @@ name: windows-smoke
 
 # Installs a Relay for Windows release on GitHub's Windows machines and checks
 # what a person would meet: the files, the Start menu, Settings > Apps, the
-# app's window, the engine answering, an install over an install, and an
-# uninstall that leaves nothing. Screenshots and logs are kept as artifacts.
+# first run and its consent line, the engine answering, the desk with its
+# console, the console kept while the window is closed, a notification and its
+# address, Alt+Space's composer, Settings, an install over an install, and an
+# uninstall that leaves nothing. Screenshots, the app's log and a summary are
+# kept as artifacts.
+#
+# relay.glass is pointed at 127.0.0.1 on the test machine first, so a test PC
+# never sends app events or a consent choice to Relay's servers and never
+# counts as a customer; what it would have sent is read from its queue on disk.
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag holding RelaySetup-*.exe (a draft is fine)"
+        description: "Release tag holding RelaySetup*.exe (a draft is fine)"
         required: true
 
 permissions:
@@ -22,25 +29,102 @@ jobs:
       matrix:
         os: [windows-2025, windows-2022, windows-11-arm]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    timeout-minutes: 40
     defaults:
       run:
-        shell: pwsh
+        # Windows PowerShell: UI Automation and System.Drawing are there on
+        # every image, ARM included.
+        shell: powershell
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Download the installer
+      - name: Download the installer and keep the test PC off relay.glass
         run: |
-          gh release download "${{ inputs.tag }}" -R "${{ github.repository }}" -p "RelaySetup-*.exe" -D dl
+          gh release download "${{ inputs.tag }}" -R "${{ github.repository }}" -p "RelaySetup*.exe" -D dl
           New-Item -ItemType Directory -Force out | Out-Null
           Get-ChildItem dl | Format-Table Name, Length
           "os=$([Environment]::OSVersion.VersionString) arch=$env:PROCESSOR_ARCHITECTURE" | Tee-Object out\summary.txt
           $wv = Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}' -ErrorAction SilentlyContinue
           "webview2=$($wv.pv)" | Tee-Object -Append out\summary.txt
+          $hosts = "$env:SystemRoot\System32\drivers\etc\hosts"
+          Add-Content -Path $hosts -Value "`r`n127.0.0.1 relay.glass"
+          ipconfig /flushdns | Out-Null
+          "relay.glass resolves to $([Net.Dns]::GetHostAddresses('relay.glass') -join ',')" | Tee-Object -Append out\summary.txt
+          # What every later step shares: screenshots, the foreground window,
+          # UI Automation over the app's windows (WebView2's pages included),
+          # and the app's log.
+          @'
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing, UIAutomationClient, UIAutomationTypes
+          if (-not ('W' -as [type])) {
+          Add-Type @"
+          using System; using System.Runtime.InteropServices; using System.Text;
+          public static class W {
+            [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+            [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+            [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+            [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint d, UIntPtr e);
+            public static string Front() {
+              IntPtr h = GetForegroundWindow(); StringBuilder sb = new StringBuilder(512);
+              GetWindowText(h, sb, 512); uint pid; GetWindowThreadProcessId(h, out pid);
+              string name = "?"; try { name = System.Diagnostics.Process.GetProcessById((int)pid).ProcessName; } catch {}
+              return "'" + sb.ToString() + "' of " + name;
+            }
+            public static void Click(int x, int y) { SetCursorPos(x, y); mouse_event(2, 0, 0, 0, UIntPtr.Zero); mouse_event(4, 0, 0, 0, UIntPtr.Zero); }
+          }
+          "@
+          }
+          $R = "$env:LOCALAPPDATA\Relay"
+          $App = "$env:LOCALAPPDATA\Programs\Relay\RelayApp.exe"
+          $Log = "$R\Logs\relayapp.log"
+          function Note($s) { $s | Tee-Object -Append out\summary.txt }
+          function Shot($name) {
+            $s = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bmp = New-Object System.Drawing.Bitmap $s.Width, $s.Height
+            $g = [System.Drawing.Graphics]::FromImage($bmp)
+            $g.CopyFromScreen($s.Location, [System.Drawing.Point]::Empty, $s.Size)
+            $bmp.Save("out\$name.png"); $g.Dispose(); $bmp.Dispose()
+          }
+          function LogLines { if (Test-Path $Log) { @(Get-Content $Log) } else { @() } }
+          function LogSince($n) { $l = LogLines; if ($l.Count -gt $n) { $l[$n..($l.Count - 1)] } }
+          function WaitLog($pattern, $from, $secs) {
+            $end = (Get-Date).AddSeconds($secs)
+            while ((Get-Date) -lt $end) { if (LogSince $from | Select-String -Quiet $pattern) { return $true }; Start-Sleep 1 }
+            return $false
+          }
+          function Procs { @(Get-Process RelayApp -ErrorAction SilentlyContinue) }
+          function RelayWindows {
+            $ids = (Procs).Id
+            $root = [System.Windows.Automation.AutomationElement]::RootElement
+            $root.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition) |
+              Where-Object { $ids -contains $_.Current.ProcessId }
+          }
+          function Find($name, $secs = 20) {
+            $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, $name)
+            $end = (Get-Date).AddSeconds($secs)
+            while ((Get-Date) -lt $end) {
+              foreach ($w in RelayWindows) { $e = $w.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cond); if ($e) { return $e } }
+              Start-Sleep 1
+            }
+            return $null
+          }
+          function Press($name) {
+            $e = Find $name
+            if (-not $e) { return "not found" }
+            try { $e.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke(); return "invoked" }
+            catch { $r = $e.Current.BoundingRectangle; [W]::Click([int]($r.X + $r.Width / 2), [int]($r.Y + $r.Height / 2)); return "clicked" }
+          }
+          function CloseDesk { $p = Procs | Select-Object -First 1; if ($p) { $p.CloseMainWindow() } else { 'no app' } }
+          function Quit {
+            if (Procs) { Start-Process $App -ArgumentList '--quit'; foreach ($i in 1..30) { if (-not (Procs)) { break }; Start-Sleep 1 } }
+            Get-Process RelayApp -ErrorAction SilentlyContinue | Stop-Process -Force
+            Start-Sleep 3
+          }
+          '@ | Set-Content -Encoding UTF8 h.ps1
 
       - name: Install silently, as a standard user would (no administrator prompt)
         run: |
-          $exe = (Get-ChildItem dl\RelaySetup-*.exe | Select-Object -First 1).FullName
+          $exe = (Get-ChildItem dl\RelaySetup*.exe | Select-Object -First 1).FullName
           # Wait for the installer alone: -Wait would also wait for the Relay
           # it opens at the end, which keeps running.
           $p = Start-Process $exe -ArgumentList '/S' -PassThru
@@ -55,47 +139,57 @@ jobs:
           foreach ($f in 'relay.exe','relayd.exe','relayw.exe','RelayApp.exe','WebView2Loader.dll','relay.ico','Uninstall Relay.exe') {
             if (Test-Path "$dir\$f") { "ok   $f $((Get-Item "$dir\$f").Length)" } else { "MISSING $f"; $bad++ }
           }
-          # The PE machine of relayd.exe: 0x8664 Intel/AMD, 0xAA64 ARM.
-          $b = [IO.File]::ReadAllBytes("$dir\relayd.exe"); $pe = [BitConverter]::ToInt32($b, 0x3C)
-          $m = '{0:X4}' -f [BitConverter]::ToUInt16($b, $pe + 4)
-          "relayd machine=0x$m on $env:PROCESSOR_ARCHITECTURE"
-          if (($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') -ne ($m -eq 'AA64')) { "WRONG ARCH"; $bad++ }
+          # The PE machine of each exe: 0x8664 Intel/AMD, 0xAA64 ARM.
+          foreach ($f in 'relayd.exe','RelayApp.exe') {
+            $b = [IO.File]::ReadAllBytes("$dir\$f"); $pe = [BitConverter]::ToInt32($b, 0x3C)
+            $m = '{0:X4}' -f [BitConverter]::ToUInt16($b, $pe + 4)
+            "$f machine=0x$m on $env:PROCESSOR_ARCHITECTURE"
+            if (($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') -ne ($m -eq 'AA64')) { "WRONG ARCH $f"; $bad++ }
+          }
+          "file version=$((Get-Item "$dir\RelayApp.exe").VersionInfo.FileVersion)"
           $lnk = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Relay.lnk"
           if (Test-Path $lnk) { "ok   Start menu shortcut" } else { "MISSING Start menu shortcut"; $bad++ }
           $u = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Relay' -ErrorAction SilentlyContinue
           if ($u) { "ok   Settings > Apps: $($u.DisplayName) $($u.DisplayVersion) by $($u.Publisher)" } else { "MISSING uninstall entry"; $bad++ }
+          $cmd = (Get-ItemProperty 'HKCU:\Software\Classes\relay-app\shell\open\command' -ErrorAction SilentlyContinue).'(default)'
+          if ($cmd -like '*RelayApp.exe*--activate*') { "ok   relay-app: opens $cmd" } else { "MISSING relay-app: protocol ($cmd)"; $bad++ }
+          $aumid = Get-ItemProperty 'HKCU:\Software\Classes\AppUserModelId\glass.relay.app' -ErrorAction SilentlyContinue
+          if ($aumid.DisplayName -eq 'Relay') { "ok   notifications are named Relay" } else { "MISSING notification name"; $bad++ }
           & "$dir\relay.exe" --version 2>&1 | Select-Object -First 3
           "install-check bad=$bad" | Tee-Object -Append out\summary.txt
           exit $bad
 
-      - name: The app opens its window
+      - name: The first run, its consent line, and one window
         continue-on-error: true
         run: |
-          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-          function Shot($name) {
-            $s = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-            $bmp = New-Object System.Drawing.Bitmap $s.Width, $s.Height
-            $g = [System.Drawing.Graphics]::FromImage($bmp)
-            $g.CopyFromScreen($s.Location, [System.Drawing.Point]::Empty, $s.Size)
-            $bmp.Save("out\$name.png"); $g.Dispose(); $bmp.Dispose()
-          }
+          . .\h.ps1
           Start-Sleep 12
-          Get-Process RelayApp, relayw, relayd -ErrorAction SilentlyContinue | Format-Table Name, Id, StartTime, MainWindowTitle
-          Shot "1-after-install"
-          $app = Get-Process RelayApp -ErrorAction SilentlyContinue
-          if (-not $app) {
-            "RelayApp not running after install; starting it" | Tee-Object -Append out\summary.txt
-            Start-Process "$env:LOCALAPPDATA\Programs\Relay\RelayApp.exe"; Start-Sleep 12; Shot "2-started-by-hand"
-            $app = Get-Process RelayApp -ErrorAction SilentlyContinue
+          Get-Process RelayApp, relayw, relayd, msedgewebview2 -ErrorAction SilentlyContinue | Format-Table Name, Id, StartTime, MainWindowTitle
+          Shot "01-after-install"
+          if (-not (Procs)) {
+            Note "RelayApp not running after install; starting it"
+            Start-Process $App; Start-Sleep 12
           }
-          "app running=$([bool]$app) title='$($app.MainWindowTitle)'" | Tee-Object -Append out\summary.txt
+          Note "app running=$([bool](Procs)) title='$((Procs | Select-Object -First 1).MainWindowTitle)' front=$([W]::Front())"
+          Note "welcome title found=$([bool](Find 'Your AI, on this PC.'))"
+          Note "consent line found=$([bool](Find 'By continuing, you help Relay get better.' 5))"
+          Note "Details: $(Press 'Details')"
+          Start-Sleep 2; Shot "02-consent-details"
+          Note "details shows the activity switch=$([bool](Find 'How I use the app' 5)) conversations=$([bool](Find 'My conversations' 5))"
+          Note "Done: $(Press 'Done')"
+          Start-Sleep 1
+          Note "consent.json before Get started=$(Test-Path "$R\consent.json")"
+          Note "Get started: $(Press 'Get started')"
+          Start-Sleep 4; Shot "03-after-get-started"
+          if (Test-Path "$R\consent.json") { Note "consent.json=$((Get-Content "$R\consent.json" -Raw) -replace '\s+', ' ')" } else { Note "consent.json MISSING after Get started" }
           # A second launch must bring the same window forward, not open another.
-          Start-Process "$env:LOCALAPPDATA\Programs\Relay\RelayApp.exe"; Start-Sleep 5
-          "RelayApp processes after second launch=$(@(Get-Process RelayApp -ErrorAction SilentlyContinue).Count)" | Tee-Object -Append out\summary.txt
-          Shot "3-second-launch"
+          Start-Process $App; Start-Sleep 5
+          Note "RelayApp processes after second launch=$((Procs).Count)"
+          Shot "04-second-launch"
 
       - name: The engine starts and answers
         continue-on-error: true
+        shell: pwsh
         run: |
           $dir = "$env:LOCALAPPDATA\Programs\Relay"
           & "$dir\relay.exe" service install 2>&1 | Tee-Object out\service-install.txt
@@ -113,33 +207,175 @@ jobs:
           Get-Process relayd -ErrorAction SilentlyContinue | Stop-Process -Force
           Start-Sleep 10
           "relayd back after kill=$([bool](Get-Process relayd -ErrorAction SilentlyContinue))" | Tee-Object -Append out\summary.txt
+          foreach ($i in 1..20) { try { if ((Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 http://127.0.0.1:8787/healthz).StatusCode -eq 200) { break } } catch {}; Start-Sleep 1 }
+
+      - name: The desk opens this PC's console
+        continue-on-error: true
+        run: |
+          . .\h.ps1
+          Quit
+          # A PC whose first run is done: the desk opens on the local relayd's
+          # console. RELAY_APP_NO_SIGN_IN stands in for a signed-in app.
+          $saved = @{}
+          if (Test-Path "$R\app.json") { (Get-Content "$R\app.json" -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $saved[$_.Name] = $_.Value } }
+          $saved['joined'] = $true; $saved['finished'] = $true
+          [IO.File]::WriteAllText("$R\app.json", ($saved | ConvertTo-Json -Compress))
+          [Environment]::SetEnvironmentVariable('RELAY_APP_NO_SIGN_IN', '1', 'User')
+          $env:RELAY_APP_NO_SIGN_IN = '1'
+          $n = (LogLines).Count
+          Start-Process $App
+          $loaded = WaitLog 'desk: the console loaded' $n 60
+          $ready = WaitLog 'desk: the console is ready' $n 30
+          Note "desk loaded=$loaded ready=$ready front=$([W]::Front())"
+          LogSince $n | Select-String 'desk:' | ForEach-Object { Note "  $_" }
+          Shot "05-desk"
+          Note "webview2 processes=$(@(Get-Process msedgewebview2 -ErrorAction SilentlyContinue).Count)"
+
+      - name: The console keeps running with the window closed
+        continue-on-error: true
+        run: |
+          . .\h.ps1
+          $n = (LogLines).Count
+          Note "close the desk: $(CloseDesk)"
+          Start-Sleep 10
+          Note "after close: RelayApp=$((Procs).Count) webview2=$(@(Get-Process msedgewebview2 -ErrorAction SilentlyContinue).Count)"
+          $since = LogSince $n | Select-String 'desk:'
+          Note "desk lines after close: $(@($since).Count)"; $since | ForEach-Object { Note "  $_" }
+          Shot "06-desk-closed"
+          $t = Get-Date
+          Start-Process $App
+          Start-Sleep 3
+          Note "reopened in ~$([int]((Get-Date) - $t).TotalSeconds)s front=$([W]::Front()) new loads=$(@(LogSince $n | Select-String 'desk: the console loaded').Count)"
+          Shot "07-desk-reopened"
+
+      - name: A notification and its address
+        continue-on-error: true
+        run: |
+          . .\h.ps1
+          $n = (LogLines).Count
+          Start-Process $App -ArgumentList '--test-toast'
+          Start-Sleep 5
+          Shot "08-toast"
+          LogSince $n | Select-String 'notify:' | ForEach-Object { Note "  $_" }
+          $nonce = $null
+          if (Test-Path "$R\toasts.json") {
+            $raw = Get-Content "$R\toasts.json" -Raw
+            Note "toasts.json=$($raw -replace '\s+', ' ')"
+            $m = [regex]::Match($raw, '[0-9a-f]{32}')
+            if ($m.Success) { $nonce = $m.Value }
+          } else { Note "toasts.json MISSING" }
+          if (-not $nonce) { $nonce = '0123456789abcdef0123456789abcdef' }
+          Set-Content -Path out\nonce.txt -Value $nonce
+          # Its address with the app running and the desk closed: the desk comes forward.
+          CloseDesk | Out-Null
+          Start-Sleep 3
+          $n = (LogLines).Count
+          Start-Process "relay-app:toast?n=$nonce&a=open"
+          Start-Sleep 6
+          Note "address, app running: RelayApp=$((Procs).Count) front=$([W]::Front())"
+          LogSince $n | Select-String 'notify:|desk:' | ForEach-Object { Note "  $_" }
+          Shot "09-address-running"
+          # An address that is not one of Relay's notifications does nothing.
+          $n = (LogLines).Count
+          Start-Process "relay-app:toast?n=zz&a=allow"
+          Start-Sleep 4
+          Note "a foreign address was refused=$([bool](LogSince $n | Select-String -Quiet 'was refused'))"
+          # Its address with the app not running: Windows starts it and the desk opens.
+          Quit
+          $n = (LogLines).Count
+          Start-Process "relay-app:toast?n=$nonce&a=open"
+          $loaded = WaitLog 'desk: the console loaded' $n 45
+          Start-Sleep 3
+          Note "address, app not running: RelayApp=$((Procs).Count) desk loaded=$loaded front=$([W]::Front())"
+          Shot "10-address-not-running"
+
+      - name: Alt+Space brings the composer up
+        continue-on-error: true
+        run: |
+          . .\h.ps1
+          $n = (LogLines).Count
+          CloseDesk | Out-Null
+          Start-Sleep 2
+          [System.Windows.Forms.SendKeys]::SendWait('% ')
+          Start-Sleep 3
+          Note "after Alt+Space front=$([W]::Front())"
+          LogSince $n | Select-String 'hotkey:' | ForEach-Object { Note "  $_" }
+          Shot "11-composer-hotkey"
+          [System.Windows.Forms.SendKeys]::SendWait('Hello from a test PC')
+          Start-Sleep 1
+          Shot "12-composer-typed"
+          [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+          Start-Sleep 2
+          Note "after Esc front=$([W]::Front())"
+          Start-Process $App -ArgumentList '--open', 'composer'
+          Start-Sleep 3
+          Note "--open composer front=$([W]::Front())"
+          Shot "13-composer-open"
+          [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+          Start-Sleep 1
+
+      - name: Settings and Something's wrong
+        continue-on-error: true
+        run: |
+          . .\h.ps1
+          Start-Process $App -ArgumentList '--open', 'settings'
+          Start-Sleep 4
+          Note "settings front=$([W]::Front()) activity switch=$([bool](Find 'How I use the app' 5))"
+          Shot "14-settings"
+          [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+          Start-Process $App -ArgumentList '--open', 'report'
+          Start-Sleep 4
+          Note "report front=$([W]::Front())"
+          Shot "15-report"
+          [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+          Note "RelayApp processes at the end=$((Procs).Count)"
+
+      - name: What it recorded, from its queue
+        continue-on-error: true
+        run: |
+          . .\h.ps1
+          $q = "$R\app-events"
+          if (Test-Path $q) {
+            $files = Get-ChildItem $q -Recurse -File
+            Note "app-events files=$($files.Count) bytes=$(($files | Measure-Object Length -Sum).Sum)"
+            $names = foreach ($f in $files) { Select-String -Path $f.FullName -Pattern '"kind":"([^"]+)"' -AllMatches | ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value } }
+            $names | Group-Object | Sort-Object Count -Descending | ForEach-Object { Note "  $($_.Count) $($_.Name)" }
+            New-Item -ItemType Directory -Force out\app-events | Out-Null
+            $files | Copy-Item -Destination out\app-events -ErrorAction SilentlyContinue
+          } else { Note "app-events folder MISSING" }
 
       - name: Install again over the running copy
         continue-on-error: true
         run: |
-          $exe = (Get-ChildItem dl\RelaySetup-*.exe | Select-Object -First 1).FullName
+          . .\h.ps1
+          $exe = (Get-ChildItem dl\RelaySetup*.exe | Select-Object -First 1).FullName
           $p = Start-Process $exe -ArgumentList '/S' -PassThru
-          if (-not $p.WaitForExit(180000)) { "reinstall did not finish in 3 min" | Tee-Object -Append out\summary.txt }
-          "reinstall exit=$($p.ExitCode)" | Tee-Object -Append out\summary.txt
+          if (-not $p.WaitForExit(180000)) { Note "reinstall did not finish in 3 min" }
+          Note "reinstall exit=$($p.ExitCode)"
           Start-Sleep 10
           Get-Process RelayApp, relayw, relayd -ErrorAction SilentlyContinue | Format-Table Name, Id, StartTime
+          Shot "16-after-reinstall"
 
       - name: Uninstall leaves nothing
         run: |
           $dir = "$env:LOCALAPPDATA\Programs\Relay"
           Copy-Item "$env:LOCALAPPDATA\Relay\Logs" out\logs -Recurse -ErrorAction SilentlyContinue
-          Get-ChildItem "$env:LOCALAPPDATA\Relay" -Recurse -Filter *.log -ErrorAction SilentlyContinue | Copy-Item -Destination out\ -ErrorAction SilentlyContinue
+          foreach ($f in 'app.json','app-settings.json','consent.json','toasts.json') { Copy-Item "$env:LOCALAPPDATA\Relay\$f" out\ -ErrorAction SilentlyContinue }
           # The uninstaller copies itself to %TEMP% and runs from there, so
           # wait for the folder to go rather than for the first process.
           Start-Process "$dir\Uninstall Relay.exe" -ArgumentList '/S'
-          foreach ($i in 1..60) { if (-not (Test-Path $dir)) { break }; Start-Sleep 1 }
-          Start-Sleep 3
+          foreach ($i in 1..90) { if (-not (Test-Path $dir)) { break }; Start-Sleep 1 }
+          Start-Sleep 5
           $bad = 0
           foreach ($p in $dir, "$env:LOCALAPPDATA\Relay", "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Relay.lnk") {
-            if (Test-Path $p) { "LEFT $p"; $bad++ } else { "gone $p" }
+            if (Test-Path $p) { "LEFT $p"; Get-ChildItem $p -Recurse -ErrorAction SilentlyContinue | Select-Object -First 10 FullName; $bad++ } else { "gone $p" }
           }
-          if (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Relay' -ErrorAction SilentlyContinue) { "LEFT uninstall entry"; $bad++ }
+          foreach ($k in 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Relay', 'HKCU:\Software\Classes\relay-app', 'HKCU:\Software\Classes\AppUserModelId\glass.relay.app') {
+            if (Test-Path $k) { "LEFT $k"; $bad++ } else { "gone $k" }
+          }
           if ((Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -ErrorAction SilentlyContinue).Relay) { "LEFT run key"; $bad++ }
+          $creds = cmdkey /list | Select-String -Pattern 'relay' -SimpleMatch
+          if ($creds) { "LEFT credentials: $creds"; $bad++ } else { "gone credentials" }
           $procs = Get-Process RelayApp, relayw, relayd -ErrorAction SilentlyContinue
           if ($procs) { "LEFT running: $($procs.Name -join ',')"; $bad++ }
           "uninstall-check bad=$bad" | Tee-Object -Append out\summary.txt
