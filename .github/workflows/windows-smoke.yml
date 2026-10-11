@@ -432,6 +432,17 @@ jobs:
           if (-not $p.WaitForExit(180000)) { Note "reinstall did not finish in 3 min" }
           Note "reinstall exit=$($p.ExitCode)"
           Start-Sleep 10
+          # An update of a PC with a config must leave its engine running.
+          Note "after reinstall: relayw=$(@(Get-Process relayw -ErrorAction SilentlyContinue).Count) relayd=$(@(Get-Process relayd -ErrorAction SilentlyContinue).Count) config=$(Test-Path "$R\config.toml")"
+          Get-Content "$R\Logs\relayd.log" -Tail 6 -ErrorAction SilentlyContinue | ForEach-Object { Note "  relayd.log: $($_ -replace '(token[=\s]+)[a-z0-9]{8,}', '$1…')" }
+          if (-not (Get-Process relayd -ErrorAction SilentlyContinue)) {
+            $o = & "$env:LOCALAPPDATA\Programs\Relay\relay.exe" service install 2>&1
+            Note "  the same command by hand: $(($o | ForEach-Object { "$_" }) -join ' | ')"
+            Start-Sleep 5
+            Note "  after it: relayd=$(@(Get-Process relayd -ErrorAction SilentlyContinue).Count)"
+          }
+          $up = $false; try { $up = (Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 http://127.0.0.1:8787/healthz).StatusCode -eq 200 } catch {}
+          Note "engine running after the update=$up"
           Get-Process RelayApp, relayw, relayd -ErrorAction SilentlyContinue | Format-Table Name, Id, StartTime
           Shot "16-after-reinstall"
           $local = WaitLog 'desk: the console opens on http://127\.0\.0\.1' $n0 90
@@ -444,6 +455,11 @@ jobs:
           . .\h.ps1
           $dir = "$env:LOCALAPPDATA\Programs\Relay"
           Copy-Item "$env:LOCALAPPDATA\Relay\Logs" out\logs -Recurse -ErrorAction SilentlyContinue
+          # The artifacts are readable by anyone: blank the local console's token.
+          Get-ChildItem out\logs -File -ErrorAction SilentlyContinue | ForEach-Object {
+            $t = Get-Content $_.FullName -Raw
+            if ($t) { [IO.File]::WriteAllText($_.FullName, ($t -replace '(token[=\s]+)[a-z0-9]{8,}', '$1…')) }
+          }
           foreach ($f in 'app.json','app-settings.json','consent.json','toasts.json') { Copy-Item "$env:LOCALAPPDATA\Relay\$f" out\ -ErrorAction SilentlyContinue }
           # The uninstaller copies itself to %TEMP% and runs from there, so
           # wait for the folder to go rather than for the first process.
@@ -480,7 +496,7 @@ jobs:
           # Each line that means a person would meet something broken.
           $wrong = 'check bad=[1-9]|did not finish|MISSING|found=False|inside=False|desk loaded=False|ready=False|' +
                    'after second launch=[02-9]|healthz=False|back after kill=False|refused=False|field after typing=''''|' +
-                   'not running: RelayApp=0|opened=none|activity switch=False|exit=[1-9]|report lines=0|console=False'
+                   'not running: RelayApp=0|opened=none|after the update=False|activity switch=False|exit=[1-9]|report lines=0|console=False'
           $bad = @($sum | Select-String -Pattern $wrong)
           $bad | ForEach-Object { "FAILED: $_" }
           if (-not ($sum | Select-String -Quiet 'uninstall-check bad=0')) { "FAILED: the uninstall check did not pass"; exit 1 }
