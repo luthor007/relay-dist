@@ -127,7 +127,12 @@ jobs:
             return $null
           }
           # What the focused app window's text field holds, read by UI Automation.
-          function FieldText {
+          function FieldText($secs = 6) {
+            $end = (Get-Date).AddSeconds($secs)
+            do { $v = FieldTextOnce; if ($v) { return $v }; Start-Sleep 1 } while ((Get-Date) -lt $end)
+            return ''
+          }
+          function FieldTextOnce {
             $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit)
             foreach ($w in RelayWindows) {
               foreach ($e in $w.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)) {
@@ -331,13 +336,19 @@ jobs:
           Start-Process "relay-app:toast?n=zz&a=allow"
           Start-Sleep 4
           Note "a foreign address was refused=$([bool](LogSince $n | Select-String -Quiet 'was refused'))"
-          # Its address with the app not running: Windows starts it and the desk opens.
+          # Its address with the app not running: Windows starts it and the desk
+          # opens. A fresh notification, since each address is acted on once.
+          Start-Process $App -ArgumentList '--test-toast'
+          Start-Sleep 4
+          $m = [regex]::Matches((Get-Content "$R\toasts.json" -Raw), '[0-9a-f]{32}')
+          if ($m.Count) { $nonce = $m[$m.Count - 1].Value }
           Quit
           $n = (LogLines).Count
           Start-Process "relay-app:toast?n=$nonce&a=open"
           $loaded = WaitLog 'desk: the console loaded' $n 45
           Start-Sleep 3
           Note "address, app not running: RelayApp=$((Procs).Count) desk loaded=$loaded front=$([W]::Front())"
+          LogSince $n | Select-String 'notify:|desk:' | ForEach-Object { Note "  $_" }
           Shot "10-address-not-running"
 
       - name: Alt+Space brings the composer up
@@ -379,9 +390,12 @@ jobs:
           OnScreen
           Shot "14-settings"
           [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+          $n = (LogLines).Count
           Start-Process $App -ArgumentList '--open', 'report'
-          Start-Sleep 4
-          Note "report front=$([W]::Front())"
+          Start-Sleep 6
+          $rl = @(LogSince $n | Select-String 'report:')
+          Note "report front=$([W]::Front()) report lines=$($rl.Count)"
+          $rl | ForEach-Object { Note "  $_" }
           Shot "15-report"
           [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
           Note "RelayApp processes at the end=$((Procs).Count)"
@@ -404,6 +418,7 @@ jobs:
         continue-on-error: true
         run: |
           . .\h.ps1
+          $n0 = (LogLines).Count
           $exe = (Get-ChildItem dl\RelaySetup*.exe | Select-Object -First 1).FullName
           $p = Start-Process $exe -ArgumentList '/S' -PassThru
           if (-not $p.WaitForExit(180000)) { Note "reinstall did not finish in 3 min" }
@@ -411,6 +426,9 @@ jobs:
           Start-Sleep 10
           Get-Process RelayApp, relayw, relayd -ErrorAction SilentlyContinue | Format-Table Name, Id, StartTime
           Shot "16-after-reinstall"
+          $local = WaitLog 'desk: the console opens on http://127\.0\.0\.1' $n0 90
+          $last = @(LogLines | Select-String 'desk: the console opens on') | Select-Object -Last 1
+          Note "desk back on this PC's console=$local (last: $last)"
 
       - name: Uninstall leaves nothing
         continue-on-error: true
@@ -454,7 +472,7 @@ jobs:
           # Each line that means a person would meet something broken.
           $wrong = 'check bad=[1-9]|did not finish|MISSING|found=False|inside=False|desk loaded=False|ready=False|' +
                    'after second launch=[02-9]|healthz=False|back after kill=False|refused=False|field after typing=''''|' +
-                   'not running: RelayApp=0|activity switch=False|exit=[1-9]'
+                   'not running: RelayApp=0|activity switch=False|exit=[1-9]|report lines=0|console=False'
           $bad = @($sum | Select-String -Pattern $wrong)
           $bad | ForEach-Object { "FAILED: $_" }
           if (-not ($sum | Select-String -Quiet 'uninstall-check bad=0')) { "FAILED: the uninstall check did not pass"; exit 1 }
