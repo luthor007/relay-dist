@@ -47,6 +47,9 @@ jobs:
           Note "os=$([Environment]::OSVersion.VersionString) arch=$env:PROCESSOR_ARCHITECTURE"
           $wv = Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}' -ErrorAction SilentlyContinue
           Note "webview2=$($wv.pv)"
+          # Windows on ARM images leave a Microsoft account sign-in window up
+          # that takes the foreground from everything; a person's PC has none.
+          Get-Process WWAHost -ErrorAction SilentlyContinue | Stop-Process -Force
           $hosts = "$env:SystemRoot\System32\drivers\etc\hosts"
           Add-Content -Path $hosts -Value "`r`n127.0.0.1 relay.glass"
           ipconfig /flushdns | Out-Null
@@ -110,6 +113,43 @@ jobs:
               Start-Sleep 1
             }
             return $null
+          }
+          function FindLike($pattern, $secs = 10) {
+            $end = (Get-Date).AddSeconds($secs)
+            while ((Get-Date) -lt $end) {
+              foreach ($w in RelayWindows) {
+                foreach ($e in $w.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)) {
+                  if ($e.Current.Name -like $pattern) { return $e }
+                }
+              }
+              Start-Sleep 1
+            }
+            return $null
+          }
+          # What the focused app window's text field holds, read by UI Automation.
+          function FieldText {
+            $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit)
+            foreach ($w in RelayWindows) {
+              foreach ($e in $w.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)) {
+                try { $v = $e.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value; if ($v) { return $v } } catch {}
+              }
+            }
+            return ''
+          }
+          # Every Relay window inside the screen's work area (above the taskbar).
+          function OnScreen {
+            $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+            foreach ($w in RelayWindows) {
+              $b = $w.Current.BoundingRectangle
+              $in = ($b.Left -ge $wa.Left - 8) -and ($b.Top -ge $wa.Top - 8) -and ($b.Right -le $wa.Right + 8) -and ($b.Bottom -le $wa.Bottom + 8)
+              Note "  window '$($w.Current.Name)' at $([int]$b.Left),$([int]$b.Top) $([int]$b.Width)x$([int]$b.Height) in work area $($wa.Width)x$($wa.Height): inside=$in"
+            }
+          }
+          function ToastHistory {
+            try {
+              [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+              return @([Windows.UI.Notifications.ToastNotificationManager]::History.GetHistory('glass.relay.app')).Count
+            } catch { return "unreadable: $($_.Exception.Message)" }
           }
           function Press($name) {
             $e = Find $name
@@ -179,7 +219,8 @@ jobs:
           }
           Note "app running=$([bool](Procs)) title='$((Procs | Select-Object -First 1).MainWindowTitle)' front=$([W]::Front())"
           Note "welcome title found=$([bool](Find 'Your AI, on this PC.'))"
-          Note "consent line found=$([bool](Find 'By continuing, you help Relay get better.' 5))"
+          Note "consent line found=$([bool](FindLike 'By continuing, you help Relay get better*' 5))"
+          OnScreen
           Note "Details: $(Press 'Details')"
           Start-Sleep 2; Shot "02-consent-details"
           Note "details shows the activity switch=$([bool](Find 'How I use the app' 5)) conversations=$([bool](Find 'My conversations' 5))"
@@ -234,6 +275,7 @@ jobs:
           $loaded = WaitLog 'desk: the console loaded' $n 60
           $ready = WaitLog 'desk: the console is ready' $n 30
           Note "desk loaded=$loaded ready=$ready front=$([W]::Front())"
+          OnScreen
           LogSince $n | Select-String 'desk:' | ForEach-Object { Note "  $_" }
           Shot "05-desk"
           Note "webview2 processes=$(@(Get-Process msedgewebview2 -ErrorAction SilentlyContinue).Count)"
@@ -260,9 +302,11 @@ jobs:
         run: |
           . .\h.ps1
           $n = (LogLines).Count
+          $before = ToastHistory
           Start-Process $App -ArgumentList '--test-toast'
           Start-Sleep 5
           Shot "08-toast"
+          Note "notification centre: Relay's notifications before=$before after=$(ToastHistory)"
           LogSince $n | Select-String 'notify:' | ForEach-Object { Note "  $_" }
           $nonce = $null
           if (Test-Path "$R\toasts.json") {
@@ -310,13 +354,17 @@ jobs:
           Shot "11-composer-hotkey"
           [System.Windows.Forms.SendKeys]::SendWait('Hello from a test PC')
           Start-Sleep 1
+          Note "composer field after typing='$(FieldText)'"
+          OnScreen
           Shot "12-composer-typed"
           [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
           Start-Sleep 2
           Note "after Esc front=$([W]::Front())"
           Start-Process $App -ArgumentList '--open', 'composer'
           Start-Sleep 3
-          Note "--open composer front=$([W]::Front())"
+          [System.Windows.Forms.SendKeys]::SendWait('second')
+          Start-Sleep 1
+          Note "--open composer front=$([W]::Front()) field='$(FieldText)'"
           Shot "13-composer-open"
           [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
           Start-Sleep 1
@@ -328,6 +376,7 @@ jobs:
           Start-Process $App -ArgumentList '--open', 'settings'
           Start-Sleep 4
           Note "settings front=$([W]::Front()) activity switch=$([bool](Find 'How I use the app' 5))"
+          OnScreen
           Shot "14-settings"
           [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
           Start-Process $App -ArgumentList '--open', 'report'
@@ -402,7 +451,11 @@ jobs:
       - name: Verdict
         run: |
           $sum = Get-Content out\summary.txt
-          $bad = @($sum | Select-String -Pattern 'check bad=[1-9]|did not finish|MISSING')
+          # Each line that means a person would meet something broken.
+          $wrong = 'check bad=[1-9]|did not finish|MISSING|found=False|inside=False|desk loaded=False|ready=False|' +
+                   'after second launch=[02-9]|healthz=False|back after kill=False|refused=False|field after typing=''''|' +
+                   'not running: RelayApp=0|activity switch=False|exit=[1-9]'
+          $bad = @($sum | Select-String -Pattern $wrong)
           $bad | ForEach-Object { "FAILED: $_" }
           if (-not ($sum | Select-String -Quiet 'uninstall-check bad=0')) { "FAILED: the uninstall check did not pass"; exit 1 }
           exit $bad.Count
