@@ -18,12 +18,18 @@ on:
       tag:
         description: "Release tag holding RelaySetup*.exe (a draft is fine)"
         required: true
+      run:
+        description: "smoke: the installer; tests: Relay's own Windows tests from the tag; both"
+        type: choice
+        options: [smoke, tests, both]
+        default: smoke
 
 permissions:
   contents: write
 
 jobs:
   smoke:
+    if: inputs.run != 'tests'
     strategy:
       fail-fast: false
       matrix:
@@ -535,3 +541,58 @@ jobs:
           $bad | ForEach-Object { "FAILED: $_" }
           if (-not ($sum | Select-String -Quiet 'uninstall-check bad=0')) { "FAILED: the uninstall check did not pass"; exit 1 }
           exit $bad.Count
+
+  # Relay's own tests that only a real Windows can prove (pseudo consoles,
+  # jobs held by a process that outlives the engine, folders' access lists):
+  # test binaries cross-compiled on a Mac, kept only on the draft release
+  # with windows-tests.txt, a line per binary saying which tests to run. The
+  # log shows pass and fail lines only; the whole output is kept three days.
+  tests:
+    if: inputs.run != 'smoke'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, windows-2022, windows-11-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: powershell
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download this machine's test binaries
+        run: |
+          $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
+          gh release download "${{ inputs.tag }}" -R "${{ github.repository }}" -p "*-windows-$arch.test.exe" -p "windows-tests.txt" -D t
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Get-ChildItem t | Format-Table Name, Length
+
+      - name: Run them
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
+          New-Item -ItemType Directory -Force out | Out-Null
+          "os=$([Environment]::OSVersion.VersionString) arch=$env:PROCESSOR_ARCHITECTURE"
+          $bad = 0
+          foreach ($line in Get-Content t\windows-tests.txt) {
+            if ($line -match '^\s*(#|$)') { continue }
+            $name, $run = $line.Trim() -split '\s+', 2
+            $exe = "t\$name-windows-$arch.test.exe"
+            if (-not (Test-Path $exe)) { "MISSING $exe"; $bad++; continue }
+            & $exe -test.v -test.count=1 -test.timeout=8m -test.run $run 2>&1 | Out-File -FilePath "out\$name.txt" -Encoding utf8
+            $code = $LASTEXITCODE
+            Get-Content "out\$name.txt" | Where-Object { $_ -match '^(--- (PASS|FAIL|SKIP)|ok |FAIL|PASS$|panic:)' }
+            "$name exit=$code"
+            if ($code -ne 0) { $bad++ }
+          }
+          "tests bad=$bad"
+          exit $bad
+
+      - name: Keep the whole output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tests-${{ matrix.os }}
+          path: out
+          retention-days: 3
