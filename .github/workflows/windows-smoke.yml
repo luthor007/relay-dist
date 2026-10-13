@@ -580,7 +580,8 @@ jobs:
             $name, $run = $line.Trim() -split '\s+', 2
             $exe = "t\$name-windows-$arch.test.exe"
             if (-not (Test-Path $exe)) { "MISSING $exe"; $bad++; continue }
-            & $exe -test.v -test.count=1 -test.timeout=8m -test.run $run 2>&1 | Out-File -FilePath "out\$name.txt" -Encoding utf8
+            # Quoted: Windows PowerShell splits a bare -test.v at its dot.
+            & $exe '-test.v' '-test.count=1' '-test.timeout=8m' "-test.run=$run" 2>&1 | Out-File -FilePath "out\$name.txt" -Encoding utf8
             $code = $LASTEXITCODE
             Get-Content "out\$name.txt" | Where-Object { $_ -match '^(--- (PASS|FAIL|SKIP)|ok |FAIL|PASS$|panic:)' }
             "$name exit=$code"
