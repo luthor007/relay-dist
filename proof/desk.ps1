@@ -157,7 +157,10 @@ foreach ($p in $seen) {
       # On the split view Ctrl+T starts a job where jobs start: Claude Code on
       # a computer, or, with no computer to start one on, Relay's composer
       # (console/src/screens/grid.ts startHere).
-      $claudeHere = [bool]($p.newProcs -match '^(claude|node|WindowsTerminal|OpenConsole)$')
+      # A Windows Terminal that came with a wsl.exe is the ARM image's WSL
+      # prompt (QuietWsl), not Claude Code.
+      $wslHost = @($p.newProcs) -contains 'wsl'
+      $claudeHere = (@($p.newProcs -match '^(claude|node)$').Count -gt 0) -or ((-not $wslHost) -and (@($p.newProcs -match '^(WindowsTerminal|OpenConsole)$').Count -gt 0))
       $composer = $u -match 'chat\?new='
       $ok = $claudeHere -or $composer -or ($u -match 'grid\?[^#]*new=')
       Result $p.id $ok "Ctrl+T, the split view on show, starts a new job ($u)" $(if (-not $ok) { $evidence } else { '' })
