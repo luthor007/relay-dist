@@ -25,7 +25,21 @@ function HeldAway($native) {
   return $null
 }
 function Screen([int]$from) { Clean ($pty.Since($from)) }
-function Say([string]$s) { $pty.Write($s); Start-Sleep -Milliseconds 400; $pty.Write("`r") }
+# Say types a prompt as a person would once the terminal is quiet: the text,
+# then Enter only when the terminal shows it (Claude Code drops what is typed
+# while it finishes a turn); typed again, once, when it never shows.
+function Say([string]$s) {
+  Start-Sleep 3
+  for ($try = 1; $try -le 2; $try++) {
+    $o = $pty.Length
+    $pty.Write($s)
+    $shown = WaitFor { if ((Screen $o) -match 'PROOF') { $true } else { $null } } 6 0.25
+    if ($shown) { Start-Sleep -Milliseconds 400; $pty.Write("`r"); Log "typed '$s'"; return }
+    Log "typed '$s' but the terminal did not show it (try $try)"
+    Start-Sleep 3
+  }
+  $pty.Write("`r")
+}
 function WaitIdle([int]$ms) {
   $ok = WaitFor { [ProofInput]::IdleMs() -ge $ms } 260 2
   Log "idle now $([ProofInput]::IdleMs()) ms (wanted $ms): $([bool]$ok)"

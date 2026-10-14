@@ -7,6 +7,11 @@ Copy-Item "$R\Logs\*" "$Out\logs" -Recurse -ErrorAction SilentlyContinue
 Copy-Item "$R\session-hooks\*" "$Out\session-hooks" -ErrorAction SilentlyContinue
 Copy-Item "$HOME\.claude\sessions\*.json" "$Out\claude-sessions" -ErrorAction SilentlyContinue
 Copy-Item "$HOME\.claude\settings.json" "$Out\claude-settings-end.json" -ErrorAction SilentlyContinue
+# The sessions' transcripts: what each tool call returned (the helper's run).
+New-Item -ItemType Directory -Force "$Out\transcripts" | Out-Null
+Get-ChildItem "$HOME\.claude\projects" -Recurse -Filter *.jsonl -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName "$Out\transcripts\$($_.Directory.Name)-$($_.Name)" -ErrorAction SilentlyContinue }
+icacls "$R" 2>&1 | Set-Content "$Out\icacls-relay.txt"
+icacls "$R\api-token" 2>&1 | Add-Content "$Out\icacls-relay.txt"
 foreach ($f in 'app.json', 'app-settings.json', 'consent.json', 'config.toml') { Copy-Item "$R\$f" "$Out\" -ErrorAction SilentlyContinue }
 $tok = Token
 Get-ChildItem $Out -Recurse -File -Include *.log, *.txt, *.json, *.toml -ErrorAction SilentlyContinue | ForEach-Object {

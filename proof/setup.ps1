@@ -63,6 +63,12 @@ foreach ($d in 'C:/', 'C:\', 'C:/proof', 'C:\proof', 'C:/proof/held', 'C:\proof\
 $state = [ordered]@{
   hasCompletedOnboarding  = $true
   lastOnboardingVersion   = ($ver -replace '\s.*$', '')
+  lastReleaseNotesSeen    = ($ver -replace '\s.*$', '')
+  # Claude Code 2.1 offers, once, to make auto mode the default; these say
+  # it was offered (what declining it writes), so the session starts in the
+  # person's manual mode, where every edit asks.
+  hasSeenAutoDefaultNudge = $true
+  hasResetAutoModeOptInForDefaultOffer = $true
   theme                   = 'dark'
   numStartups             = 5
   autoUpdates             = $false
@@ -93,6 +99,8 @@ Result 'S4-stub' ([bool]($ans -eq 'ok')) "the Messages API stub answers on 127.0
 # --- The engine, started with Claude Code there ----------------------------
 & "$Dir\relay.exe" service install *> "$Out\service-install.txt"
 $up = [bool](WaitFor { Healthy } 90 1)
+# A copy of relayd's token outside the artifacts (lib.ps1 Token).
+try { [IO.File]::WriteAllText($TokenKeep, [IO.File]::ReadAllText("$R\api-token").Trim()) } catch { Log "api-token at setup: $($_.Exception.Message)" }
 Result 'S2-engine' $up 'relayd answers on 127.0.0.1:8787 (signed out, not joined)' $(if (-not $up) { 'no /healthz in 90 s (out\service-install.txt)' } else { '' })
 
 # Claude Code connected, both halves, as a person turns it on in the

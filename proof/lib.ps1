@@ -54,10 +54,26 @@ function Shot($name) {
   } catch { Log "screenshot $name failed: $($_.Exception.Message)" }
 }
 
+# relayd's token, from its file each time (as the desk reads it), and the
+# copy setup kept outside the artifacts when the file cannot be read.
+$TokenKeep = "$env:RUNNER_TEMP\proof-api-token"
 function Token {
-  $t = Get-Content "$R\api-token" -Raw -ErrorAction SilentlyContinue
-  if ($t) { return $t.Trim() }
+  try { $t = [IO.File]::ReadAllText("$R\api-token").Trim(); if ($t) { return $t } }
+  catch { if (-not $script:TokenReadLogged) { $script:TokenReadLogged = $true; Log "api-token unreadable: $($_.Exception.Message)" } }
+  if (Test-Path $TokenKeep) { return (Get-Content $TokenKeep -Raw).Trim() }
   return ''
+}
+# Why a call was refused, once: the token file's state against the copy kept
+# at setup, and its folder's access list.
+function TokenDiagnosis {
+  if ($script:TokenDiagnosed) { return }
+  $script:TokenDiagnosed = $true
+  $now = ''; try { $now = [IO.File]::ReadAllText("$R\api-token").Trim() } catch { $now = "unreadable: $($_.Exception.Message)" }
+  $kept = if (Test-Path $TokenKeep) { (Get-Content $TokenKeep -Raw).Trim() } else { '' }
+  $same = ($now -eq $kept)
+  Log "401 diagnosis: api-token length $($now.Length), same as at setup: $same, written $((Get-Item "$R\api-token" -ErrorAction SilentlyContinue).LastWriteTimeUtc.ToString('o'))"
+  (icacls "$R\api-token" 2>&1) + (icacls "$R" 2>&1) | ForEach-Object { Log "  icacls: $_" }
+  Get-Process relayd -ErrorAction SilentlyContinue | ForEach-Object { Log "  relayd pid $($_.Id) started $($_.StartTime.ToUniversalTime().ToString('o'))" }
 }
 
 # Api calls this PC's relayd with its own token. Returns the decoded body, or
@@ -75,6 +91,18 @@ function Api([string]$method, [string]$path, $body = $null, [int]$timeout = 20) 
     $msg = $_.ErrorDetails.Message; if (-not $msg) { $msg = $_.Exception.Message }
     Log "api $method $path -> $code $msg"
     $script:LastApiError = "$code $msg"
+    if ($code -eq 401) {
+      TokenDiagnosis
+      # Once more with the token as it was at setup, when that differs.
+      $kept = if (Test-Path $TokenKeep) { (Get-Content $TokenKeep -Raw).Trim() } else { '' }
+      if ($kept -and $kept -ne (Token)) {
+        try {
+          $h = @{ Authorization = "Bearer $kept" }
+          if ($null -ne $body) { return Invoke-RestMethod -Method $method -Uri "$Base$path" -Headers $h -ContentType 'application/json' -Body ([Text.Encoding]::UTF8.GetBytes(($body | ConvertTo-Json -Depth 8 -Compress))) -TimeoutSec $timeout }
+          return Invoke-RestMethod -Method $method -Uri "$Base$path" -Headers $h -TimeoutSec $timeout
+        } catch { Log "api $method $path with the setup token -> $($_.Exception.Message)" }
+      }
+    }
     return $null
   }
 }
