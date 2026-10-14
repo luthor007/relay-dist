@@ -19,9 +19,9 @@ on:
         description: "Release tag holding RelaySetup*.exe (a draft is fine)"
         required: true
       run:
-        description: "smoke: the installer; tests: Relay's own Windows tests from the tag; both"
+        description: "smoke: the installer; tests: Relay's own Windows tests from the tag; both; proof: real Claude Code, real keys, real Windows Terminal"
         type: choice
-        options: [smoke, tests, both]
+        options: [smoke, tests, both, proof]
         default: smoke
 
 permissions:
@@ -29,7 +29,7 @@ permissions:
 
 jobs:
   smoke:
-    if: inputs.run != 'tests'
+    if: inputs.run == 'smoke' || inputs.run == 'both'
     strategy:
       fail-fast: false
       matrix:
@@ -548,7 +548,7 @@ jobs:
   # with windows-tests.txt, a line per binary saying which tests to run. The
   # log shows pass and fail lines only; the whole output is kept three days.
   tests:
-    if: inputs.run != 'smoke'
+    if: inputs.run == 'tests' || inputs.run == 'both'
     strategy:
       fail-fast: false
       matrix:
@@ -597,3 +597,77 @@ jobs:
           name: tests-${{ matrix.os }}
           path: out
           retention-days: 3
+
+  # What only the real thing proves (run=proof), with no account and no
+  # money: the draft's installer signed out; real Claude Code from npm talking
+  # to a local stand-in for the Messages API (proof/stub.js), so Relay's hooks
+  # fire from a real session, a prompt is held while nobody has touched the PC
+  # for two minutes and let go at a real pointer move, and a helper Claude
+  # Code folds under its parent; real key presses (SendInput) into the desk;
+  # and a held job opened in real Windows Terminal. The log shows one PASS,
+  # FAIL or N/A line per check (N/A says what cannot be proven here and why);
+  # everything seen is kept three days. The scripts are test scaffolding only.
+  proof:
+    if: inputs.run == 'proof'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, windows-11-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 50
+    defaults:
+      run:
+        shell: powershell
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PROOF_TAG: ${{ inputs.tag }}
+      PROOF_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Relay signed out, Claude Code on the stub, the desk
+        continue-on-error: true
+        run: |
+          Set-ExecutionPolicy -Scope Process Bypass -Force
+          .\proof\setup.ps1 -Tag $env:PROOF_TAG -Repo $env:PROOF_REPO
+
+      - name: Keys pressed in the desk
+        continue-on-error: true
+        run: |
+          Set-ExecutionPolicy -Scope Process Bypass -Force
+          .\proof\desk.ps1
+
+      - name: A real Claude Code session, its hooks, away and back
+        continue-on-error: true
+        timeout-minutes: 25
+        run: |
+          Set-ExecutionPolicy -Scope Process Bypass -Force
+          .\proof\session.ps1
+
+      - name: A held job in Windows Terminal
+        continue-on-error: true
+        timeout-minutes: 8
+        run: |
+          Set-ExecutionPolicy -Scope Process Bypass -Force
+          .\proof\wt.ps1
+
+      - name: Keep what it saw
+        if: always()
+        continue-on-error: true
+        run: |
+          Set-ExecutionPolicy -Scope Process Bypass -Force
+          .\proof\collect.ps1
+
+      - name: Keep the logs and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: proof-${{ matrix.os }}
+          path: out
+          retention-days: 3
+
+      - name: Verdict
+        if: always()
+        run: |
+          Set-ExecutionPolicy -Scope Process Bypass -Force
+          .\proof\verdict.ps1
