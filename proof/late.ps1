@@ -84,7 +84,11 @@ $key = 'sk-ant-api03-proof' + ('x' * 76) + 'AAAAProofHarness0001'
 $state = [ordered]@{ hasCompletedOnboarding = $true; lastOnboardingVersion = $v; lastReleaseNotesSeen = $v; hasSeenAutoDefaultNudge = $true; hasResetAutoModeOptInForDefaultOffer = $true; theme = 'dark'; numStartups = 5; autoUpdates = $false; customApiKeyResponses = @{ approved = @($key.Substring($key.Length - 20)); rejected = @() }; projects = $trusted }
 [IO.File]::WriteAllText("$HOME\.claude.json", ($state | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding $false))
 $envs = @{ ANTHROPIC_BASE_URL = "http://127.0.0.1:$StubPort"; ANTHROPIC_API_KEY = $key; CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1'; DISABLE_AUTOUPDATER = '1' }
-[IO.File]::WriteAllText("$HOME\.claude\settings.json", (@{ env = $envs } | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding $false))
+# Into the settings there may be already (hooks Relay added at its start).
+$settings = @{}
+try { $old = Get-Content "$HOME\.claude\settings.json" -Raw -ErrorAction Stop | ConvertFrom-Json; foreach ($p in $old.PSObject.Properties) { $settings[$p.Name] = $p.Value } } catch {}
+$settings['env'] = $envs
+[IO.File]::WriteAllText("$HOME\.claude\settings.json", ($settings | ConvertTo-Json -Depth 12), (New-Object Text.UTF8Encoding $false))
 
 # Then onto the person's Path, as the installer's last step.
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
