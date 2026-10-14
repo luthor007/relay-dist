@@ -101,6 +101,9 @@ $took = [int]((Get-Date) - $t0).TotalMilliseconds
 Log "L2 open ($took ms): $(if ($open) { $open | ConvertTo-Json -Compress -Depth 5 } else { "refused: $($script:LastApiError)" })"
 $id = if ($open) { $open.opened.native_id } else { '' }
 if (-not $id -and $open) { $id = $open.opened.session -replace '^claude-code/', '' }
+# Claude Code ready at its prompt: older ones say "? for shortcuts", 2.1 says its
+# mode ("shift+tab to cycle") under the prompt.
+$ready = 'for shortcuts|shift\+tab to cycle'
 $screen = ''
 $job = $null
 if ($open) {
@@ -108,12 +111,12 @@ if ($open) {
   while ((Get-Date) -lt $end) {
     $job = @((Api GET '/v1/terminals').terminals) | Where-Object { $_.name -eq 'late-held' -or $_.dir -like '*late*held*' } | Select-Object -First 1
     if ($job) { $screen = Screen $job.id }
-    if (($job -and $job.ended) -or $screen -match 'for shortcuts') { break }
+    if (($job -and $job.ended) -or $screen -match $ready) { break }
     Start-Sleep 2
   }
 }
 Log "L2 job: $(if ($job) { "$($job.id) ended=$($job.ended)" } else { 'none' }) screen: $(Tail $screen)"
-$l2 = [bool]($job -and -not $job.ended -and $screen -match 'for shortcuts')
+$l2 = [bool]($job -and -not $job.ended -and $screen -match $ready)
 Result 'L2-installed-late-runs' $l2 'Claude Code installed after relayd started runs in a job started from the desk' $(if (-not $open) { "refused: $($script:LastApiError)" } elseif (-not $job) { 'no job listed' } elseif ($job.ended) { "the job ended at once; its terminal: '$(Tail $screen 200)'" } elseif (-not $l2) { "never showed Claude Code ready: '$(Tail $screen 200)'" } else { '' })
 
 # --- L3: a job that cannot start says why -------------------------------------
