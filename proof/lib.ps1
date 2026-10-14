@@ -13,14 +13,14 @@ if (-not ('ProofInput' -as [type])) {
 
 $Out = Join-Path (Get-Location) 'out'
 New-Item -ItemType Directory -Force $Out | Out-Null
-$R = "$env:LOCALAPPDATA\Relay"
-$Dir = "$env:LOCALAPPDATA\Programs\Relay"
-$App = "$Dir\RelayApp.exe"
-$AppLog = "$R\Logs\relayapp.log"
-$RelaydLog = "$R\Logs\relayd.log"
+$RelayDir = "$env:LOCALAPPDATA\Relay"
+$InstallDir = "$env:LOCALAPPDATA\Programs\Relay"
+$App = "$InstallDir\RelayApp.exe"
+$AppLog = "$RelayDir\Logs\relayapp.log"
+$RelaydLog = "$RelayDir\Logs\relayd.log"
 $Base = 'http://127.0.0.1:8787'
 $StubPort = 4545
-$Work = 'C:\proof'
+$WorkDir = 'C:\proof'
 
 function Log($s) {
   $line = "$(Get-Date -Format 'HH:mm:ss.fff') $s"
@@ -58,7 +58,7 @@ function Shot($name) {
 # copy setup kept outside the artifacts when the file cannot be read.
 $TokenKeep = "$env:RUNNER_TEMP\proof-api-token"
 function Token {
-  try { $t = [IO.File]::ReadAllText("$R\api-token").Trim(); if ($t) { return $t } }
+  try { $t = [IO.File]::ReadAllText("$RelayDir\api-token").Trim(); if ($t) { return $t } }
   catch { if (-not $script:TokenReadLogged) { $script:TokenReadLogged = $true; Log "api-token unreadable: $($_.Exception.Message)" } }
   if (Test-Path $TokenKeep) { return (Get-Content $TokenKeep -Raw).Trim() }
   return ''
@@ -68,11 +68,11 @@ function Token {
 function TokenDiagnosis {
   if ($script:TokenDiagnosed) { return }
   $script:TokenDiagnosed = $true
-  $now = ''; try { $now = [IO.File]::ReadAllText("$R\api-token").Trim() } catch { $now = "unreadable: $($_.Exception.Message)" }
+  $now = ''; try { $now = [IO.File]::ReadAllText("$RelayDir\api-token").Trim() } catch { $now = "unreadable: $($_.Exception.Message)" }
   $kept = if (Test-Path $TokenKeep) { (Get-Content $TokenKeep -Raw).Trim() } else { '' }
   $same = ($now -eq $kept)
-  Log "401 diagnosis: api-token length $($now.Length), same as at setup: $same, written $((Get-Item "$R\api-token" -ErrorAction SilentlyContinue).LastWriteTimeUtc.ToString('o'))"
-  (icacls "$R\api-token" 2>&1) + (icacls "$R" 2>&1) | ForEach-Object { Log "  icacls: $_" }
+  Log "401 diagnosis: api-token length $($now.Length), same as at setup: $same, written $((Get-Item "$RelayDir\api-token" -ErrorAction SilentlyContinue).LastWriteTimeUtc.ToString('o'))"
+  (icacls "$RelayDir\api-token" 2>&1) + (icacls "$RelayDir" 2>&1) | ForEach-Object { Log "  icacls: $_" }
   Get-Process relayd -ErrorAction SilentlyContinue | ForEach-Object { Log "  relayd pid $($_.Id) started $($_.StartTime.ToUniversalTime().ToString('o'))" }
 }
 
@@ -138,7 +138,7 @@ function AppLogSince($n) { $l = AppLogLines; if ($l.Count -gt $n) { $l[$n..($l.C
 # every object with a kind, wherever it sits in a file.
 function AppEvents {
   $found = New-Object System.Collections.ArrayList
-  $q = "$R\app-events"
+  $q = "$RelayDir\app-events"
   if (-not (Test-Path $q)) { return @() }
   foreach ($f in Get-ChildItem $q -Recurse -File -ErrorAction SilentlyContinue) {
     $raw = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue

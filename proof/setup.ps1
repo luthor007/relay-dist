@@ -25,7 +25,7 @@ if (-not $exe) {
 Log "installer $($exe.Name) $($exe.Length) bytes"
 $p = Start-Process $exe.FullName -ArgumentList '/S' -PassThru
 $done = $p.WaitForExit(180000)
-$missing = @('relay.exe', 'relayd.exe', 'relayw.exe', 'RelayApp.exe') | Where-Object { -not (Test-Path "$Dir\$_") }
+$missing = @('relay.exe', 'relayd.exe', 'relayw.exe', 'RelayApp.exe') | Where-Object { -not (Test-Path "$InstallDir\$_") }
 Result 'S1-install' ([bool]($done -and $p.ExitCode -eq 0 -and -not $missing)) "Relay installed from $Tag ($($exe.Name))" $(if ($missing) { "missing: $($missing -join ', ')" } elseif (-not $done) { 'installer did not finish in 3 min' } else { '' })
 
 # --- Claude Code, real, pointed at the stub --------------------------------
@@ -55,7 +55,7 @@ Result 'S3-claude-code' ([bool]($claude -and $ver -match '\d+\.\d+')) "Claude Co
 # Its first run asks nothing: onboarding done, these folders trusted, the
 # stub's key approved, the stub in its settings too (which Claude Code
 # applies to itself and to everything it runs).
-New-Item -ItemType Directory -Force "$HOME\.claude", $Work, "$Work\held", "$Work\.claude" | Out-Null
+New-Item -ItemType Directory -Force "$HOME\.claude", $WorkDir, "$WorkDir\held", "$WorkDir\.claude" | Out-Null
 $trusted = @{}
 foreach ($d in 'C:/', 'C:\', 'C:/proof', 'C:\proof', 'C:/proof/held', 'C:\proof\held') {
   $trusted[$d] = @{ hasTrustDialogAccepted = $true; hasCompletedProjectOnboarding = $true; allowedTools = @(); projectOnboardingSeenCount = 1 }
@@ -83,9 +83,12 @@ $settings = @{ env = $envs; permissions = @{ defaultMode = 'manual' } }
 # The helper the proof session starts is allowed in that folder, so no
 # prompt but the ones under test is ever raised.
 $local = @{ permissions = @{ allow = @('Bash(env -u CLAUDECODE claude -p:*)', 'Bash(env:*)', 'Bash(claude -p:*)', 'Bash(claude:*)') } }
-[IO.File]::WriteAllText("$Work\.claude\settings.local.json", ($local | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding $false))
+[IO.File]::WriteAllText("$WorkDir\.claude\settings.local.json", ($local | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding $false))
 
 # --- The stub --------------------------------------------------------------
+# The helper's answer is held 90 s, so it is alive while relayd and the
+# harness look at it (Claude Code's Bash tool waits up to two minutes).
+$env:PROOF_HELPER_MS = '90000'
 $stub = Start-Process node -ArgumentList "`"$PSScriptRoot\stub.js`" $StubPort `"$Out\stub.log`"" -WindowStyle Hidden -PassThru
 Add-Content -Path $env:GITHUB_ENV -Value "PROOF_STUB_PID=$($stub.Id)"
 $ans = WaitFor {
@@ -97,10 +100,10 @@ $ans = WaitFor {
 Result 'S4-stub' ([bool]($ans -eq 'ok')) "the Messages API stub answers on 127.0.0.1:$StubPort"
 
 # --- The engine, started with Claude Code there ----------------------------
-& "$Dir\relay.exe" service install *> "$Out\service-install.txt"
+& "$InstallDir\relay.exe" service install *> "$Out\service-install.txt"
 $up = [bool](WaitFor { Healthy } 90 1)
 # A copy of relayd's token outside the artifacts (lib.ps1 Token).
-try { [IO.File]::WriteAllText($TokenKeep, [IO.File]::ReadAllText("$R\api-token").Trim()) } catch { Log "api-token at setup: $($_.Exception.Message)" }
+try { [IO.File]::WriteAllText($TokenKeep, [IO.File]::ReadAllText("$RelayDir\api-token").Trim()) } catch { Log "api-token at setup: $($_.Exception.Message)" }
 Result 'S2-engine' $up 'relayd answers on 127.0.0.1:8787 (signed out, not joined)' $(if (-not $up) { 'no /healthz in 90 s (out\service-install.txt)' } else { '' })
 
 # Claude Code connected, both halves, as a person turns it on in the
@@ -146,9 +149,9 @@ if (Procs) { Start-Process $App -ArgumentList '--quit'; [void](WaitFor { -not (P
 Get-Process RelayApp -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep 2
 $saved = @{}
-if (Test-Path "$R\app.json") { (Get-Content "$R\app.json" -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $saved[$_.Name] = $_.Value } }
+if (Test-Path "$RelayDir\app.json") { (Get-Content "$RelayDir\app.json" -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $saved[$_.Name] = $_.Value } }
 $saved['joined'] = $true; $saved['finished'] = $true
-[IO.File]::WriteAllText("$R\app.json", ($saved | ConvertTo-Json -Compress))
+[IO.File]::WriteAllText("$RelayDir\app.json", ($saved | ConvertTo-Json -Compress))
 [Environment]::SetEnvironmentVariable('RELAY_APP_NO_SIGN_IN', '1', 'User')
 $env:RELAY_APP_NO_SIGN_IN = '1'
 Add-Content -Path $env:GITHUB_ENV -Value 'RELAY_APP_NO_SIGN_IN=1'

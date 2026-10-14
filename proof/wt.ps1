@@ -43,7 +43,7 @@ if ($null -eq $list) {
   }
   exit 0
 }
-$open = Api POST '/v1/sessions' @{ folder = "$Work\held"; text = 'hello from the proof'; view = 'terminal'; name = 'proof-held'; runtime = 'claude-code' } 60
+$open = Api POST '/v1/sessions' @{ folder = "$WorkDir\held"; text = 'hello from the proof'; view = 'terminal'; name = 'proof-held'; runtime = 'claude-code' } 60
 Log "open: $($open | ConvertTo-Json -Compress -Depth 5)"
 $job = WaitFor { (Api GET '/v1/terminals').terminals | Where-Object { -not $_.ended -and ($_.name -eq 'proof-held' -or $_.dir -like '*proof*held*') } | Select-Object -First 1 } 60 2
 if (-not $job) { $job = (Api GET '/v1/terminals').terminals | Where-Object { -not $_.ended } | Select-Object -First 1 }
@@ -52,9 +52,9 @@ if ($job) {
   $since = 0
   $end = (Get-Date).AddSeconds(60)
   while ((Get-Date) -lt $end -and $screen -notmatch 'for shortcuts|ok') {
-    $r = Api GET "/v1/terminals/$($job.id)/screen?since=$since&wait=5" $null 30
-    if ($r -and $r.data) { $screen += Clean ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($r.data))); $since = $r.next }
-    elseif (-not $r) { Start-Sleep 2 }
+    $sr = Api GET "/v1/terminals/$($job.id)/screen?since=$since&wait=5" $null 30
+    if ($sr -and $sr.data) { $screen += Clean ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($sr.data))); $since = $sr.next }
+    elseif (-not $sr) { Start-Sleep 2 }
   }
 }
 Log "held job $($job.id): $($screen.Substring([Math]::Max(0, $screen.Length - 300)))"
@@ -70,20 +70,42 @@ if (-not $job) {
 # view's new tab (Ctrl+N) fills itself with the open jobs, each pane with its
 # "Open in Windows Terminal"; else the job is opened from Work.
 function FindOpen {
-  $e = FindLike '*Open in Windows Terminal*' 4
+  $e = FindLike '*Open in*Terminal*' 4
   if ($e) { return $e }
-  Log 'desk: Ctrl+N, for a split view tab holding the open jobs'
-  [void][ProofInput]::Chord([uint16[]]@(0x11, 0x4E))
-  Start-Sleep 4
-  $e = FindLike '*Open in Windows Terminal*' 6
-  if ($e) { return $e }
-  $work = FindLike 'Work' 3
-  if ($work) { Log 'desk: clicking Work'; [void](ClickElement $work); Start-Sleep 3 }
-  foreach ($way in '*proof-held*', '*hello from the proof*', '*held*') {
-    $row = FindLike $way 3
-    if ($row) { Log "desk: clicking '$($row.Current.Name)'"; [void](ClickElement $row); Start-Sleep 4; break }
+  # Work, then its Split view: a pane for each open job, each with its tools.
+  foreach ($step in @(@('Work', 'Split view'), @('Work', '*done today*'))) {
+    foreach ($name in $step) {
+      $el = FindLike $name 4
+      if ($el) { Log "desk: clicking '$($el.Current.Name)'"; [void](ClickElement $el); Start-Sleep 3 } else { Log "desk: no '$name' to click" }
+    }
+    Shot "wt-find-$($step[-1] -replace '\W', '')"
+    $e = FindLike '*Open in*Terminal*' 5
+    if ($e) { return $e }
+    foreach ($way in '*hello from the proof*', '*proof-held*') {
+      $row = FindLike $way 3
+      if ($row) {
+        Log "desk: clicking '$($row.Current.Name)'"; [void](ClickElement $row); Start-Sleep 4
+        Shot 'wt-find-job'
+        $e = FindLike '*Open in*Terminal*' 6
+        if ($e) { return $e }
+        break
+      }
+    }
   }
-  return (FindLike '*Open in Windows Terminal*' 6)
+  return $null
+}
+# What a Windows Terminal window shows, through UI Automation's text pattern.
+function WtText($h) {
+  try {
+    $w = [System.Windows.Automation.AutomationElement]::FromHandle($h)
+    foreach ($e in $w.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)) {
+      try {
+        $tp = $e.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
+        if ($tp) { $t = $tp.DocumentRange.GetText(20000); if ($t) { return ([regex]::Replace($t, '\s+', ' ')).Trim() } }
+      } catch {}
+    }
+  } catch {}
+  return ''
 }
 function OpenOnce([string]$tag, $known) {
   $front = BringDesk
@@ -101,7 +123,9 @@ function OpenOnce([string]$tag, $known) {
   $new = WaitFor { $n = @([ProofInput]::WindowsOf('WindowsTerminal') | Where-Object { $known -notcontains $_ }); if ($n.Count -gt 0) { $n } else { $null } } 20 0.5
   Start-Sleep 2
   $new = if ($new) { @($new) } else { @() }
-  $o = [ordered]@{ via = $via; found = [bool]$btn; deskFront = $front; new = @($new | ForEach-Object { [ProofInput]::Describe($_) }); newHandles = $new; front = [ProofInput]::Front(); frontHandle = [ProofInput]::GetForegroundWindow() }
+  Start-Sleep 3
+  $texts = @($new | ForEach-Object { WtText $_ })
+  $o = [ordered]@{ via = $via; found = [bool]$btn; control = $(if ($btn) { $btn.Current.Name } else { '' }); deskFront = $front; new = @($new | ForEach-Object { [ProofInput]::Describe($_) }); newHandles = $new; text = @($texts | ForEach-Object { $_.Substring([Math]::Max(0, $_.Length - 400)) }); front = [ProofInput]::Front(); frontHandle = [ProofInput]::GetForegroundWindow() }
   Log "open ${tag}: $(($o | ConvertTo-Json -Compress -Depth 3))"
   Shot "wt-$tag"
   return $o
@@ -111,9 +135,11 @@ function OpenOnce([string]$tag, $known) {
 $known = @([ProofInput]::WindowsOf('WindowsTerminal'))
 Log "Windows Terminal windows before: $(@($known | ForEach-Object { [ProofInput]::Describe($_) }) -join '; ')"
 $first = OpenOnce 'first' $known
-Result 'T2-desk-control' $first.found "the desk shows 'Open in Windows Terminal' for the held job" $(if (-not $first.found) { "no control by that name in the desk's UI Automation tree (looked on the screen shown, a split view tab of open jobs, and Work); relayd's own call was used for the rest" } else { '' })
+$named = if ($first.found) { $first.control } else { '' }
+Result 'T2-desk-control' ($first.found -and $named -like '*Windows Terminal*') "the desk shows 'Open in Windows Terminal' for the held job$(if ($named) { " ('$named')" })" $(if (-not $first.found) { "no 'Open in … Terminal' control in the desk's UI Automation tree (looked on the screen shown, Work's Split view, and the job from Work); relayd's own call was used for the rest" } elseif ($named -notlike '*Windows Terminal*') { "the control is named '$named', a Mac's word" } else { '' })
 $opened = $first.newHandles.Count -gt 0
-Result 'T3-wt-opens' $opened "a new Windows Terminal window opens on the job (via the $($first.via)): $($first.new -join '; ')" $(if (-not $opened) { "no new WindowsTerminal window 20 s after the press$(if ($script:LastApiError) { "; last API error: $($script:LastApiError)" })" } else { '' })
+$showsJob = @($first.text | Where-Object { $_ -match 'hello from the proof|for shortcuts|Claude Code' }).Count -gt 0
+Result 'T3-wt-opens' ($opened -and $showsJob) "a new Windows Terminal window opens on the job (via the $($first.via)): $($first.new -join '; ')" $(if (-not $opened) { "no new WindowsTerminal window 20 s after the press$(if ($script:LastApiError) { "; last API error: $($script:LastApiError)" })" } elseif (-not $showsJob) { "the new window does not show the job; it shows: '$(($first.text -join ' | ') -replace '^.*(.{250})$', '$1')'" } else { '' })
 $inFront = $opened -and ($first.newHandles -contains $first.frontHandle)
 Result 'T4-wt-in-front' $inFront "the new Windows Terminal window is in front" $(if (-not $inFront) { "in front: $($first.front)" } else { '' })
 

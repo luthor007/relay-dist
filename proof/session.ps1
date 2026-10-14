@@ -15,7 +15,7 @@ if (-not $claude -or -not (Healthy)) {
   }
   exit 0
 }
-Remove-Item "$Work\*.txt" -Force -ErrorAction SilentlyContinue
+Remove-Item "$WorkDir\*.txt" -Force -ErrorAction SilentlyContinue
 
 function Recs($native) { @(HookRecords | Where-Object { $_.session -eq "claude-code/$native" }) }
 function Row($native) { SessionRows | Where-Object { $_.id -eq "claude-code/$native" -or $_.native_id -eq $native } | Select-Object -First 1 }
@@ -56,7 +56,7 @@ $t0 = NowMs
 # Sessions relayd already knows (a Claude Code the desk's Ctrl+T started)
 # are not this one.
 $known = @(HookRecords | ForEach-Object { $_.session } | Sort-Object -Unique)
-$pty = New-Object ProofPty -ArgumentList "cmd.exe /d /c `"$claude`"", $Work, 120, 40, "$Out\pty-session.txt"
+$pty = New-Object ProofPty -ArgumentList "cmd.exe /d /c `"$claude`"", $WorkDir, 120, 40, "$Out\pty-session.txt"
 Log "claude started in a pseudo console, pid $($pty.Pid)"
 $ready = $false
 $end = (Get-Date).AddSeconds(90)
@@ -106,14 +106,17 @@ $n0 = (Recs $native).Count
 Say 'PROOF-WRITE C:/proof/present.txt'
 $asked = WaitFor { if ((Screen $off) -match 'Do you want') { $true } else { $null } } 40
 $heldHere = HeldAway $native
+# relayd takes the hooks' records in on its next sweep: waited for, not read once.
+function IsRequest($x, [string]$file) { $x.kind -eq 'request' -and $x.prompt -match "Write.*$([regex]::Escape($file))" }
+[void](WaitFor { $rs = Recs $native; if ((@($rs | Where-Object { $_.kind -eq 'started' }).Count -gt 0) -and (@($rs | Where-Object { IsRequest $_ 'present.txt' }).Count -gt 0)) { $true } else { $null } } 20 1)
 $rs = Recs $native
 $started = @($rs | Where-Object { $_.kind -eq 'started' -and $_.prompt -match 'PROOF-WRITE' }).Count -gt 0
-$request = @($rs | Where-Object { $_.kind -eq 'request' -and $_.tool.name -eq 'Write' }) | Select-Object -Last 1
+$request = @($rs | Where-Object { IsRequest $_ 'present.txt' }) | Select-Object -Last 1
 Result 'C2-prompt-submit' $started 'UserPromptSubmit reached relayd with the prompt typed'
 Result 'C3-permission-present' ([bool]($request -and -not $request.away -and $asked -and -not $heldHere)) "PermissionRequest reached relayd and, the person at the PC, the terminal asked at once" $(if (-not $request) { 'no request record for the Write' } elseif ($heldHere -or $request.away) { "held as away though input was $([ProofInput]::IdleMs()) ms ago" } elseif (-not $asked) { "the terminal showed no permission question in 40 s" } else { '' })
 Shot 'session-turn-a'
 if ($heldHere) { [void](Api POST "/v1/sessions/claude-code/$native/answer" @{ question = $heldHere.id; decision = 'allow' }) } else { $pty.Write("`r") }
-$wrote = [bool](WaitFor { Test-Path "$Work\present.txt" } 30)
+$wrote = [bool](WaitFor { Test-Path "$WorkDir\present.txt" } 30)
 $stopped = [bool](WaitFor { if (@(Recs $native | Where-Object { $_.kind -eq 'completed' }).Count -gt 0) { $true } else { $null } } 30)
 Result 'C4-stop' ($stopped -and $wrote) 'Stop reached relayd when the turn ended (and Claude Code made the file it was allowed to)' $(if (-not $wrote) { 'present.txt was not written' } elseif (-not $stopped) { "no 'completed' record" } else { '' })
 
@@ -129,11 +132,31 @@ $helper = WaitFor {
 } 60 2
 $rows = SessionRows
 $rows | ForEach-Object { Log "row $($_.id) parent=$($_.parent) state=$($_.state) title=$($_.title)" }
+# The helper's real parent chain, as Windows has it, for the record.
+$parentPid = $null; $helperPid = $null
+foreach ($f in Get-ChildItem "$HOME\.claude\sessions" -Filter *.json -ErrorAction SilentlyContinue) {
+  $j = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
+  if ($j.sessionId -eq $native) { $parentPid = [int]$j.pid } elseif ($j.sessionId) { $helperPid = [int]$j.pid }
+}
+$chain = @()
+if ($helperPid) {
+  $procs = @{}; Get-CimInstance Win32_Process | ForEach-Object { $procs[[int]$_.ProcessId] = $_ }
+  $cur = $helperPid
+  for ($i = 0; $i -lt 16 -and $cur -and $procs.ContainsKey($cur); $i++) {
+    $pp = $procs[$cur]
+    $chain += "$($pp.Name) $cur (started $($pp.CreationDate.ToUniversalTime().ToString('HH:mm:ss.fff')))"
+    if ($cur -eq $parentPid) { break }
+    $cur = [int]$pp.ParentProcessId
+  }
+  if ($cur -and -not $procs.ContainsKey($cur)) { $chain += "pid $cur (gone)" }
+}
+$chainText = $chain -join ' <- '
+Log "helper chain (helper $helperPid, parent session $parentPid): $chainText"
 Get-ChildItem "$HOME\.claude\sessions" -ErrorAction SilentlyContinue | ForEach-Object { Log "registry $($_.Name): $((Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue) -replace '\s+', ' ')" }
 $helperRecs = @(HookRecords | Where-Object { $_.session -ne "claude-code/$native" -and $_.kind -eq 'opened' -and [double]$_.at -ge $t0 })
 $why = ''
 if (-not $helper) {
-  $why = "no /v1/sessions row names claude-code/$native as its parent; helper sessions heard by hooks: $($helperRecs.Count); registry entries: $(@(Get-ChildItem "$HOME\.claude\sessions" -Filter *.json -ErrorAction SilentlyContinue).Count)"
+  $why = "no /v1/sessions row names claude-code/$native as its parent while both ran (60 s); helper sessions heard by hooks: $($helperRecs.Count); registry entries: $(@(Get-ChildItem "$HOME\.claude\sessions" -Filter *.json -ErrorAction SilentlyContinue).Count); Windows' chain from the helper: $chainText"
 }
 Result 'C5-helper-fold' ([bool]$helper) "a claude -p started from the session folds under it (parent=claude-code/$native)" $why
 $done = WaitFor { if (@(Recs $native | Where-Object { $_.kind -eq 'completed' }).Count -ge 2) { $true } else { $null } } 100 2
@@ -149,10 +172,10 @@ Say 'PROOF-WRITE C:/proof/away.txt'
 $held = WaitFor { HeldAway $native } 30
 $shownWhileHeld = (Screen $off) -match 'Do you want'
 Shot 'session-turn-c-held'
-Result 'A1-away-held' ([bool]$held) "with no key or pointer for $([int]([ProofInput]::IdleMs() / 1000)) s, the prompt waits on the desk and the phone (pending, away)" $(if (-not $held) { "nothing held as away in 30 s (idle reached=$idleOk; relayd's .pending files: $(@(Get-ChildItem "$R\session-hooks" -Filter *.pending -ErrorAction SilentlyContinue).Count))" } elseif ($shownWhileHeld) { 'note: the terminal drew its own question while held' } else { '' })
+Result 'A1-away-held' ([bool]$held) "with no key or pointer for $([int]([ProofInput]::IdleMs() / 1000)) s, the prompt waits on the desk and the phone (pending, away)" $(if (-not $held) { "nothing held as away in 30 s (idle reached=$idleOk; relayd's .pending files: $(@(Get-ChildItem "$RelayDir\session-hooks" -Filter *.pending -ErrorAction SilentlyContinue).Count))" } elseif ($shownWhileHeld) { 'note: the terminal drew its own question while held' } else { '' })
 if ($held) {
   $a = Api POST "/v1/sessions/claude-code/$native/answer" @{ question = $held.id; decision = 'allow' }
-  $wrote = [bool](WaitFor { Test-Path "$Work\away.txt" } 30)
+  $wrote = [bool](WaitFor { Test-Path "$WorkDir\away.txt" } 30)
   Result 'A2-away-answer-reaches-claude' $wrote "an Allow sent to relayd (as the phone's) reaches Claude Code, which makes the file" $(if (-not $wrote) { "away.txt not written in 30 s (answer reply: $($a | ConvertTo-Json -Compress))" } else { '' })
 } else {
   Result 'A2-away-answer-reaches-claude' $false 'an Allow sent to relayd reaches Claude Code' 'nothing was held to answer (A1)'
@@ -162,6 +185,7 @@ if ($held) {
 
 # --- Turn D: away, then back: the terminal's own question again -------------
 if ([ProofInput]::IdleMs() -lt 125000) { [void](WaitIdle 125000) }
+$offD = $pty.Length
 Say 'PROOF-WRITE C:/proof/back.txt'
 $held = WaitFor { HeldAway $native } 30
 if ($held) {
@@ -170,11 +194,13 @@ if ($held) {
   $sent = [ProofInput]::Nudge()
   $gone = WaitFor { if (-not (HeldAway $native)) { $true } else { $null } } 15 0.2
   $goneAfter = ((Get-Date) - $tb).TotalSeconds
-  $asked = WaitFor { if ((Screen $off) -match 'Do you want') { $true } else { $null } } 15
+  # Claude Code 2.1 draws its own question while the hook holds; once the
+  # hold lets go, Enter in the terminal must answer it.
+  $shown = (Screen $offD) -match 'Do you want'
   Shot 'session-turn-d-back'
-  Result 'A3-back-lets-go' ([bool]($gone -and $goneAfter -le 5 -and $asked)) "a pointer move (SendInput) lets the held prompt go in $([Math]::Round($goneAfter, 1)) s and the terminal asks itself" $(if (-not $gone) { "still held 15 s after the move (SendInput took $sent events)" } elseif ($goneAfter -gt 5) { "let go only after $([Math]::Round($goneAfter, 1)) s" } elseif (-not $asked) { 'the terminal showed no question after the hold let go' } else { '' })
   $pty.Write("`r")
-  [void](WaitFor { Test-Path "$Work\back.txt" } 20)
+  $mine = [bool](WaitFor { Test-Path "$WorkDir\back.txt" } 20)
+  Result 'A3-back-lets-go' ([bool]($gone -and $goneAfter -le 5 -and $mine)) "a pointer move (SendInput) lets the held prompt go in $([Math]::Round($goneAfter, 1)) s and the terminal's own question takes the answer" $(if (-not $gone) { "still held 15 s after the move (SendInput took $sent events)" } elseif ($goneAfter -gt 5) { "let go only after $([Math]::Round($goneAfter, 1)) s" } elseif (-not $mine) { "Enter in the terminal did not make back.txt (its question shown: $shown)" } else { '' })
 } else {
   Result 'A3-back-lets-go' $false 'the held prompt lets go when the person is back' 'nothing was held as away (A1)'
   $pty.Write("`r")
