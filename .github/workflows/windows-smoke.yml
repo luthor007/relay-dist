@@ -19,9 +19,9 @@ on:
         description: "Release tag holding RelaySetup*.exe (a draft is fine)"
         required: true
       run:
-        description: "smoke: the installer; tests: Relay's own Windows tests from the tag; both; proof: real Claude Code, real keys, real Windows Terminal"
+        description: "smoke: the installer; tests: Relay's own Windows tests from the tag; both; proof: real Claude Code, real keys, real Windows Terminal; late: a desk job with Claude Code missing, then installed while Relay runs"
         type: choice
-        options: [smoke, tests, both, proof]
+        options: [smoke, tests, both, proof, late]
         default: smoke
 
 permissions:
@@ -663,6 +663,47 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: proof-${{ matrix.os }}
+          path: out
+          retention-days: 3
+
+      - name: Verdict
+        if: always()
+        run: |
+          Set-ExecutionPolicy -Scope Process Bypass -Force
+          .\proof\verdict.ps1
+
+  # A job started from the desk when Claude Code is missing, then installed
+  # while Relay runs (run=late): a Windows customer's eight presses of +
+  # (2026-10-14) each answered 201 and never came up. One PASS, FAIL or N/A
+  # line per check, as the proof's.
+  late:
+    if: inputs.run == 'late'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, windows-11-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: powershell
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Desk jobs with Claude Code missing, then installed late
+        continue-on-error: true
+        timeout-minutes: 20
+        run: |
+          Set-ExecutionPolicy -Scope Process Bypass -Force
+          .\proof\late.ps1 -Tag "${{ inputs.tag }}" -Repo "${{ github.repository }}"
+
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: late-${{ matrix.os }}
           path: out
           retention-days: 3
 
