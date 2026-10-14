@@ -12,7 +12,11 @@
 # L3: a job that cannot start says why, with what its terminal showed.
 # L4: Claude Code's hooks are added once it is on the PC, so its prompts
 #     reach the desk and the phone.
-param([Parameter(Mandatory = $true)][string]$Tag, [string]$Repo = 'luthor007/relay-dist')
+# -Start folder: Claude Code's folder (~/.claude) is there when Relay starts,
+# as on a PC where it ran once from a window whose Path relayd never got, or
+# where the Claude app made it: the customer's shape (each + answered 201).
+# -Start none: nothing of Claude Code's is there.
+param([Parameter(Mandatory = $true)][string]$Tag, [string]$Repo = 'luthor007/relay-dist', [ValidateSet('folder', 'none')][string]$Start = 'none')
 . "$PSScriptRoot\lib.ps1"
 Expect 'L0-engine', 'L1-missing-said', 'L2-installed-late-runs', 'L3-why-said', 'L4-hooks-late'
 
@@ -25,6 +29,8 @@ ipconfig /flushdns | Out-Null
 $pre = (Get-Command claude -ErrorAction SilentlyContinue).Source
 Log "claude before anything: $(if ($pre) { $pre } else { 'none' })"
 
+Log "start=$Start"
+if ($Start -eq 'folder') { New-Item -ItemType Directory -Force "$HOME\.claude" | Out-Null }
 gh release download $Tag -R $Repo -p 'RelaySetup*.exe' -D dl 2>&1 | ForEach-Object { Log "gh: $_" }
 $exe = Get-ChildItem dl\RelaySetup*.exe -ErrorAction SilentlyContinue | Select-Object -First 1
 $p = Start-Process $exe.FullName -ArgumentList '/S' -PassThru
