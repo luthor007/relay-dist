@@ -45,6 +45,10 @@ if ($null -eq $list) {
 }
 $open = Api POST '/v1/sessions' @{ folder = "$WorkDir\held"; text = 'hello from the proof'; view = 'terminal'; name = 'proof-held'; runtime = 'claude-code' } 60
 Log "open: $($open | ConvertTo-Json -Compress -Depth 5)"
+if ($null -eq $open -and $script:LastApiError -match 'holds no terminal') {
+  foreach ($id in $all) { Result $id $null 'a job Relay holds, in Windows Terminal' "this build holds no jobs on a PC (POST /v1/sessions view=terminal answered $($script:LastApiError)); held jobs are on desktop/windows-terminal-20261013: run this on a draft built from it or from the integration" }
+  exit 0
+}
 $job = WaitFor { (Api GET '/v1/terminals').terminals | Where-Object { -not $_.ended -and ($_.name -eq 'proof-held' -or $_.dir -like '*proof*held*') } | Select-Object -First 1 } 60 2
 if (-not $job) { $job = (Api GET '/v1/terminals').terminals | Where-Object { -not $_.ended } | Select-Object -First 1 }
 $screen = ''
