@@ -74,6 +74,7 @@ function Api([string]$method, [string]$path, $body = $null, [int]$timeout = 20) 
     $code = ''; try { $code = [int]$_.Exception.Response.StatusCode } catch {}
     $msg = $_.ErrorDetails.Message; if (-not $msg) { $msg = $_.Exception.Message }
     Log "api $method $path -> $code $msg"
+    $script:LastApiError = "$code $msg"
     return $null
   }
 }

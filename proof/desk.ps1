@@ -6,7 +6,7 @@
 # in front; and, when WebView2's debugging port is open, the page's keydown.
 . "$PSScriptRoot\lib.ps1"
 $deskStart = Get-Date
-Expect 'K0-cdp', 'K4-f5', 'K5-ctrl-r', 'K1-ctrl-n', 'K3-ctrl-shift-t', 'K2-ctrl-t', 'K6-alt-space'
+Expect 'K0-cdp', 'K4-f5', 'K5-ctrl-r', 'K1-ctrl-n', 'K3-ctrl-shift-t', 'K2-ctrl-t', 'K2b-ctrl-t-claude-here', 'K6-alt-space'
 
 function DocUrl {
   $h = DeskWindow
@@ -64,8 +64,9 @@ $VK = @{ CTRL = 0x11; SHIFT = 0x10; ALT = 0x12; N = 0x4E; T = 0x54; R = 0x52; F5
 $presses = @(
   @{ id = 'K4-f5'; name = 'F5'; keys = @($VK.F5) },
   @{ id = 'K5-ctrl-r'; name = 'Ctrl+R'; keys = @($VK.CTRL, $VK.R) },
-  @{ id = 'K1-ctrl-n'; name = 'Ctrl+N'; keys = @($VK.CTRL, $VK.N) },
   @{ id = 'K3-ctrl-shift-t'; name = 'Ctrl+Shift+T'; keys = @($VK.CTRL, $VK.SHIFT, $VK.T) },
+  # Ctrl+N then Ctrl+T: Ctrl+T is the split view's own key once it is on show.
+  @{ id = 'K1-ctrl-n'; name = 'Ctrl+N'; keys = @($VK.CTRL, $VK.N) },
   @{ id = 'K2-ctrl-t'; name = 'Ctrl+T'; keys = @($VK.CTRL, $VK.T) }
 )
 $seen = @()
@@ -115,13 +116,15 @@ Log "app events read: $($ev.Count)"
 function EventsIn($r) { @($ev | Where-Object { [double]$_.at -ge $r.t0 -and [double]$_.at -le ($r.t1 + 1500) }) }
 foreach ($r in $seen) {
   $in = EventsIn $r
-  $appear = @($in | Where-Object { $_.kind -eq 'screen.appear' } | ForEach-Object { "$($_.screen)" })
+  # The console names its screens "console.<id>".
+  $appear = @($in | Where-Object { $_.kind -eq 'screen.appear' } | ForEach-Object { "$($_.screen)" -replace '^console\.', '' })
   $launch = @($in | Where-Object { $_.kind -eq 'app.launch' }).Count
   $u = "$($r.urlAfter)"
   $evidence = "url '$($r.urlBefore)' -> '$u'; screens [$($appear -join ',')]; reloads $($r.reloads); launches $launch; new processes [$($r.newProcs -join ',')]"
   if ($r.keys) { $evidence += "; page keydowns $($r.keys)" }
   if (-not $r.deskFront) {
     Result $r.id $false "$($r.name) reaches the desk" "the desk was not in front before the press ($($r.front)); $evidence"
+    if ($r.id -eq 'K2-ctrl-t') { Result 'K2b-ctrl-t-claude-here' $false 'Ctrl+T starts Claude Code on this PC in a pane' 'the desk was not in front' }
     continue
   }
   switch ($r.id) {
@@ -130,16 +133,24 @@ foreach ($r in $seen) {
       Result $r.id (-not $reloaded) "$($r.name) leaves the desk as it is, as a Mac's WKWebView does (no browser reload)" $(if ($reloaded) { "the desk reloaded (audit N11: WebView2's browser keys are on in the desk); $evidence" } else { '' })
     }
     'K1-ctrl-n' {
-      $ok = ($u -match 'grid\?[^#]*tab=') -or ($appear -contains 'grid')
-      Result $r.id $ok "Ctrl+N opens a new tab of the split view" $(if (-not $ok) { $evidence } else { '' })
+      $ok = ($u -match '#/grid') -and (($appear -contains 'grid') -or ($r.urlBefore -notmatch '#/grid'))
+      Result $r.id $ok "Ctrl+N opens a new tab of the split view ($u)" $(if (-not $ok) { $evidence } else { '' })
     }
     'K3-ctrl-shift-t' {
       $ok = ($u -match 'chat\?[^#]*where=relay') -or ($appear -contains 'chat')
-      Result $r.id $ok "Ctrl+Shift+T opens a new job for Relay in the cloud" $(if (-not $ok) { $evidence } else { '' })
+      Result $r.id $ok "Ctrl+Shift+T opens a new job for Relay in the cloud ($u)" $(if (-not $ok) { $evidence } else { '' })
     }
     'K2-ctrl-t' {
-      $ok = ($u -match 'grid\?[^#]*new=') -or ($appear -contains 'grid') -or ($r.newProcs -match 'claude|node|WindowsTerminal|powershell|OpenConsole')
-      Result $r.id $ok "Ctrl+T starts Claude Code on this PC in a pane of the split view" $(if (-not $ok) { $evidence } else { '' })
+      # On the split view Ctrl+T starts a job where jobs start: Claude Code on
+      # a computer, or, with no computer to start one on, Relay's composer
+      # (console/src/screens/grid.ts startHere).
+      $claudeHere = [bool]($r.newProcs -match '^(claude|node|WindowsTerminal|OpenConsole)$')
+      $composer = $u -match 'chat\?new='
+      $ok = $claudeHere -or $composer -or ($u -match 'grid\?[^#]*new=')
+      Result $r.id $ok "Ctrl+T, the split view on show, starts a new job ($u)" $(if (-not $ok) { $evidence } else { '' })
+      if ($claudeHere) { Result 'K2b-ctrl-t-claude-here' $true "Ctrl+T started Claude Code on this PC ($($r.newProcs -join ','))" }
+      elseif ($composer) { Result 'K2b-ctrl-t-claude-here' $null 'Ctrl+T starts Claude Code on this PC in a pane' "this PC is signed out and joined to no box, so the split view has no computer to start Claude Code on and opens Relay's composer instead, as the console does on a Mac with none (grid.ts startHere, place RELAY); needs a joined PC" }
+      else { Result 'K2b-ctrl-t-claude-here' $false 'Ctrl+T starts Claude Code on this PC in a pane' $evidence }
     }
   }
 }

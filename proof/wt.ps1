@@ -36,7 +36,11 @@ Result 'T0-wt-there' ([bool]$wt) "Windows Terminal is on this PC ($how)" $(if (-
 # --- A job Relay holds ---------------------------------------------------------
 $list = Api GET '/v1/terminals'
 if ($null -eq $list) {
-  foreach ($id in $all) { Result $id $null 'a job Relay holds, in Windows Terminal' "this build has no held jobs (GET /v1/terminals answered no list); they are on desktop/windows-terminal-20261013, so run this on a draft built from it or from the integration" }
+  $why = "GET /v1/terminals answered $($script:LastApiError)"
+  foreach ($id in $all) {
+    if ($script:LastApiError -match '^501') { Result $id $null 'a job Relay holds, in Windows Terminal' "this build holds no jobs on a PC ($why); held jobs are on desktop/windows-terminal-20261013: run this on a draft built from it or from the integration" }
+    else { Result $id $false 'a job Relay holds, in Windows Terminal' $why }
+  }
   exit 0
 }
 $open = Api POST '/v1/sessions' @{ folder = "$Work\held"; text = 'hello from the proof'; view = 'terminal'; name = 'proof-held'; runtime = 'claude-code' } 60

@@ -85,6 +85,13 @@ public sealed class ProofPty : IDisposable
             throw new Exception("UpdateProcThreadAttribute: " + Marshal.GetLastWin32Error());
         STARTUPINFOEX si = new STARTUPINFOEX();
         si.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFOEX));
+        // Null standard handles, said so: otherwise a child of a process whose
+        // own are redirected (a CI runner's pipes) inherits those pipes instead
+        // of the pseudo console's, and sees no terminal at all.
+        si.StartupInfo.dwFlags = 0x00000100; // STARTF_USESTDHANDLES
+        si.StartupInfo.hStdInput = IntPtr.Zero;
+        si.StartupInfo.hStdOutput = IntPtr.Zero;
+        si.StartupInfo.hStdError = IntPtr.Zero;
         si.lpAttributeList = attrs;
         PROCESS_INFORMATION pi;
         if (!CreateProcessW(null, new StringBuilder(commandLine), IntPtr.Zero, IntPtr.Zero, false, EXTENDED_STARTUPINFO_PRESENT, IntPtr.Zero, dir, ref si, out pi))

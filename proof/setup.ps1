@@ -95,6 +95,14 @@ Result 'S4-stub' ([bool]($ans -eq 'ok')) "the Messages API stub answers on 127.0
 $up = [bool](WaitFor { Healthy } 90 1)
 Result 'S2-engine' $up 'relayd answers on 127.0.0.1:8787 (signed out, not joined)' $(if (-not $up) { 'no /healthz in 90 s (out\service-install.txt)' } else { '' })
 
+# Claude Code connected, both halves, as a person turns it on in the
+# console's Connectors (a joined PC's phone does the same): Relay's held jobs
+# and its sessions list answer only for a connected Claude Code.
+foreach ($half in 'read', 'write') {
+  $g = Api POST '/v1/connectors/claude_code/grant' @{ half = $half }
+  Log "grant claude_code $half -> $($g | ConvertTo-Json -Compress) $(if ($null -eq $g) { $script:LastApiError })"
+}
+
 # relayd adds Claude Code's hooks as it starts (mendSessionHooks): the seven
 # events, each running this install's relayd.exe session-hook.
 $hooksOk = WaitFor {
@@ -151,6 +159,8 @@ $n = (AppLogLines).Count
 Start-Process $App
 $loaded = [bool](WaitFor { AppLogSince $n | Select-String -Quiet 'desk: the console loaded' } 60 1)
 Start-Sleep 3
+# Windows Server 2025 and the ARM image leave Search's flyout over everything.
+if ([ProofInput]::FrontProcess() -eq 'SearchHost') { [void][ProofInput]::Chord([uint16[]]@(0x1B)); Start-Sleep 1; Log "closed Windows Search's flyout" }
 AppLogSince $n | Select-String 'desk:' | ForEach-Object { Log "app: $_" }
 Shot 'setup-desk'
 Result 'D0-desk-console' $loaded "the desk opened this PC's console ($([ProofInput]::Front()))"
