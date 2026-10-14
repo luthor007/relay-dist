@@ -160,7 +160,11 @@ if (-not $helper) {
 }
 Result 'C5-helper-fold' ([bool]$helper) "a claude -p started from the session folds under it (parent=claude-code/$native)" $why
 $done = WaitFor { if (@(Recs $native | Where-Object { $_.kind -eq 'completed' }).Count -ge 2) { $true } else { $null } } 100 2
-$hs = if ($helperRecs) { $helperRecs[0].session } else { '' }
+# Read again now: the helper's own SessionStart can land after C5 looked
+# (2025 once had the helper's row at 1 s and its record later); the helper's
+# row names it too.
+$helperRecs = @(HookRecords | Where-Object { $_.session -ne "claude-code/$native" -and $_.kind -eq 'opened' -and [double]$_.at -ge $t0 })
+$hs = if ($helperRecs) { $helperRecs[0].session } elseif ($helper) { "$($helper.id)" } else { '' }
 $closed = $hs -and (@(HookRecords | Where-Object { $_.session -eq $hs -and $_.kind -eq 'closed' }).Count -gt 0)
 Result 'C6-session-end' ([bool]$closed) "SessionEnd reached relayd when the helper Claude Code ended ($hs)" $(if (-not $hs) { 'no helper session was heard of' } elseif (-not $closed) { "no 'closed' record for it (turn done=$([bool]$done))" } else { '' })
 Dump 'after-helper'
