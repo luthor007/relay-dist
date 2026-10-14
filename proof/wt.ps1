@@ -85,8 +85,8 @@ function FindOpen {
     Shot "wt-find-$($step[-1] -replace '\W', '')"
     $e = FindLike '*Open in*Terminal*' 5
     if ($e) { return $e }
-    foreach ($way in '*hello from the proof*', '*proof-held*') {
-      $row = FindLike $way 3
+    foreach ($way in '*proof-held*', '*hello from the proof*') {
+      $row = FindLike $way 10
       if ($row) {
         Log "desk: clicking '$($row.Current.Name)'"; [void](ClickElement $row); Start-Sleep 4
         Shot 'wt-find-job'
@@ -144,7 +144,7 @@ $known = @([ProofInput]::WindowsOf('WindowsTerminal'))
 Log "Windows Terminal windows before: $(@($known | ForEach-Object { [ProofInput]::Describe($_) }) -join '; ')"
 $first = OpenOnce 'first' $known
 $named = if ($first.found) { $first.control } else { '' }
-Result 'T2-desk-control' ($first.found -and $named -like '*Windows Terminal*') "the desk shows 'Open in Windows Terminal' for the held job$(if ($named) { " ('$named')" })" $(if (-not $first.found) { "no 'Open in … Terminal' control in the desk's UI Automation tree (looked on the screen shown, Work's Split view, and the job from Work); relayd's own call was used for the rest" } elseif ($named -notlike '*Windows Terminal*') { "the control is named '$named', a Mac's word" } else { '' })
+Result 'T2-desk-control' ($first.found -and $named -like '*Windows Terminal*') "the desk shows 'Open in Windows Terminal' for the held job$(if ($named) { " ('$named')" })" $(if (-not $first.found) { "no 'Open in ... Terminal' control in the desk's UI Automation tree (looked on the screen shown, Work's Split view, and the job from Work); relayd's own call was used for the rest" } elseif ($named -notlike '*Windows Terminal*') { "the control is named '$named', a Mac's word" } else { '' })
 $opened = $first.newHandles.Count -gt 0
 $showsJob = @($first.text | Where-Object { $_ -match 'hello from the proof|for shortcuts|Claude Code' }).Count -gt 0
 Result 'T3-wt-opens' ($opened -and $showsJob) "a new Windows Terminal window opens on the job (via the $($first.via)): $($first.new -join '; ')" $(if (-not $opened) { "no new WindowsTerminal window 20 s after the press$(if ($script:LastApiError) { "; last API error: $($script:LastApiError)" })" } elseif (-not $showsJob) { "the new window does not show the job; it shows: '$(($first.text -join ' | ') -replace '^.*(.{250})$', '$1')'" } else { '' })
