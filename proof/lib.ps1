@@ -221,6 +221,7 @@ function DeskWindow {
 # app brings it forward and gives its page the keyboard); only when that
 # leaves another window in front is the desk's title bar clicked.
 function BringDesk {
+  foreach ($d in QuietWsl) { Log "wsl (bringing the desk): $d" }
   Start-Process $App
   Start-Sleep 3
   $h = DeskWindow
@@ -240,7 +241,8 @@ function BringDesk {
 # Subsystem for Linux must be updated ... Press any key to install", that
 # takes the front and is no window of Relay's. Stopping it only brings the
 # next one 30 s later, so QuietWsl parks it instead: its window minimized
-# without taking the front, the process left waiting, so no other comes. It
+# (one that has the front gives it up), the process left waiting, so no
+# other comes; a key pressed into it would start WSL's install. It
 # records each one once, with its chain of parents as Windows has them, and
 # returns one line per thing it did. Git Bash's bash.exe is never touched.
 $script:WslSeen = @{}

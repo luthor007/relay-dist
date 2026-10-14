@@ -317,7 +317,15 @@ public static class ProofInput
     public static bool Close(IntPtr h) { return PostMessage(h, 0x0010, IntPtr.Zero, IntPtr.Zero); }
     [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
     [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
-    // Minimizes a window without giving anything the front (SW_SHOWMINNOACTIVE);
-    // false when it was minimized already.
-    public static bool Park(IntPtr h) { if (IsIconic(h)) return false; ShowWindow(h, 7); return true; }
+    // Minimizes a window. One that has the front gives it up to the next
+    // window (SW_MINIMIZE: a window minimized without that keeps the keyboard);
+    // any other is minimized without taking the front (SW_SHOWMINNOACTIVE).
+    // False when there was nothing to do.
+    public static bool Park(IntPtr h)
+    {
+        if (GetForegroundWindow() == h) { ShowWindow(h, 6); return true; }
+        if (IsIconic(h)) return false;
+        ShowWindow(h, 7);
+        return true;
+    }
 }
