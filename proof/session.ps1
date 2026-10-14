@@ -107,7 +107,7 @@ Say 'PROOF-WRITE C:/proof/present.txt'
 $asked = WaitFor { if ((Screen $off) -match 'Do you want') { $true } else { $null } } 40
 $heldHere = HeldAway $native
 # relayd takes the hooks' records in on its next sweep: waited for, not read once.
-function IsRequest($x, [string]$file) { $x.kind -eq 'request' -and $x.prompt -match "Write.*$([regex]::Escape($file))" }
+function IsRequest($x, [string]$file) { $x.kind -eq 'request' -and $x.prompt -match "(?s)Write.*$([regex]::Escape($file))" }
 [void](WaitFor { $rs = Recs $native; if ((@($rs | Where-Object { $_.kind -eq 'started' }).Count -gt 0) -and (@($rs | Where-Object { IsRequest $_ 'present.txt' }).Count -gt 0)) { $true } else { $null } } 20 1)
 $rs = Recs $native
 $started = @($rs | Where-Object { $_.kind -eq 'started' -and $_.prompt -match 'PROOF-WRITE' }).Count -gt 0
@@ -122,9 +122,9 @@ Result 'C4-stop' ($stopped -and $wrote) 'Stop reached relayd when the turn ended
 
 # --- Turn B: a helper Claude Code started from this session ------------------
 $off = $pty.Length
-# CLAUDECODE is unset for it, as a workflow's script does: Claude Code
-# refuses to start inside another Claude Code session that left it set.
-Say 'PROOF-BASH env -u CLAUDECODE claude -p PROOF-HELPER'
+# The way a workflow starts a helper: `claude -p` from the session's own
+# Bash tool (Git Bash on a PC), through npm's claude shim.
+Say 'PROOF-BASH claude -p PROOF-HELPER'
 $script:helperAsked = $false
 $helper = WaitFor {
   if (-not $script:helperAsked -and (Screen $off) -match 'Do you want') { Log 'the helper command asked for permission; allowed it in the terminal'; $script:helperAsked = $true; $pty.Write("`r") }

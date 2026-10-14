@@ -98,12 +98,16 @@ function FindOpen {
 function WtText($h) {
   try {
     $w = [System.Windows.Automation.AutomationElement]::FromHandle($h)
+    # The terminal's own text: the longest a text pattern gives (a tab's
+    # title gives a line).
+    $best = ''
     foreach ($e in $w.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)) {
       try {
         $tp = $e.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
-        if ($tp) { $t = $tp.DocumentRange.GetText(20000); if ($t) { return ([regex]::Replace($t, '\s+', ' ')).Trim() } }
+        if ($tp) { $t = ([regex]::Replace($tp.DocumentRange.GetText(40000), '\s+', ' ')).Trim(); if ($t.Length -gt $best.Length) { $best = $t } }
       } catch {}
     }
+    return $best
   } catch {}
   return ''
 }
