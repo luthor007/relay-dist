@@ -97,8 +97,8 @@ foreach ($p in $presses) {
 }
 
 # --- Alt+Space, from anywhere -----------------------------------------------
-# A WSL prompt of the ARM image's (QuietWsl) is closed first; one that takes
-# the front during the press is no answer of Relay's, so it is closed and the
+# A WSL prompt of the ARM image's (QuietWsl) is minimized first; one that takes
+# the front during the press is no answer of Relay's, so it is minimized and the
 # press made once more, and the note says so.
 $desk = DeskWindow
 $note = ''
@@ -113,7 +113,7 @@ foreach ($try in 1, 2) {
   $composer = ([ProofInput]::FrontProcess() -eq 'RelayApp') -and ($frontH -ne $desk)
   if ($composer -or ($try -eq 2) -or ([ProofInput]::Title($frontH) -notmatch '\\system32\\(wsl|bash)\.exe$')) { break }
   $note = " (pressed again: the image's WSL prompt took the front the first time)"
-  Log "alt+space: the front was the image's WSL prompt ($([ProofInput]::Front())); closing it and pressing again"
+  Log "alt+space: the front was the image's WSL prompt ($([ProofInput]::Front())); minimizing it and pressing again"
 }
 $hot = @(AppLogSince $n | Select-String 'hotkey:|composer' | ForEach-Object { "$_" })
 Log "alt+space sent=$sent front=$([ProofInput]::Front()) desk=$([ProofInput]::Describe($desk)) log=$($hot -join ' | ')"

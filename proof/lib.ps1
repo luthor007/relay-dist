@@ -233,35 +233,34 @@ function BringDesk {
   return [ProofInput]::Front()
 }
 
-# The windows-11-arm image's WSL is its inbox stub: whatever starts wsl.exe
-# there gets "Windows Subsystem for Linux must be updated ... Press any key to
-# install" in a window of its own (Windows Terminal hosts it), which can take
-# the front and is no window of Relay's. QuietWsl records who started it (its
-# chain of parents, as Windows has them), closes its window and stops it, and
-# returns one line per thing it did. Git Bash's bash.exe is left alone; only
-# System32's (WSL's launcher) is stopped.
+# The windows-11-arm image's WSL is its inbox stub, and something of the
+# image's starts "wsl.exe --update --confirm --prompt-before-exit" every 30 s
+# while none is running (seen 2026-10-14: before Relay is installed, its
+# parent already gone). Each one is a Windows Terminal window, "Windows
+# Subsystem for Linux must be updated ... Press any key to install", that
+# takes the front and is no window of Relay's. Stopping it only brings the
+# next one 30 s later, so QuietWsl parks it instead: its window minimized
+# without taking the front, the process left waiting, so no other comes. It
+# records each one once, with its chain of parents as Windows has them, and
+# returns one line per thing it did. Git Bash's bash.exe is never touched.
+$script:WslSeen = @{}
 function WslPrompts {
-  @(foreach ($p in 'WindowsTerminal', 'wsl', 'bash', 'conhost', 'OpenConsole') {
+  @(foreach ($p in 'WindowsTerminal', 'wsl') {
       [ProofInput]::WindowsOf($p) | Where-Object { [ProofInput]::Title($_) -match '\\system32\\(wsl|bash)\.exe$|^wsl(\.exe)?$' }
     })
 }
 function QuietWsl {
   $did = @()
-  $ps = @(Get-Process wsl -ErrorAction SilentlyContinue) +
-    @(Get-Process bash -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$env:SystemRoot\System32\*" })
+  $ps = @(Get-Process wsl -ErrorAction SilentlyContinue | Where-Object { -not $script:WslSeen.ContainsKey($_.Id) })
   if ($ps.Count) {
     $all = @{}; Get-CimInstance Win32_Process | ForEach-Object { $all[[int]$_.ProcessId] = $_ }
     foreach ($p in $ps) {
-      $chain = @(); $c = $all[[int]$p.Id]; $k = 0
+      $script:WslSeen[$p.Id] = $true
+      $chain = @(); $c = $all[[int]$p.Id]; $k = 0; $parent = if ($c) { [int]$c.ParentProcessId } else { 0 }
       while ($c -and $k -lt 6) { $chain += "$($c.Name)[$($c.ProcessId)] $((("$($c.CommandLine)") -replace '\s+', ' ').Trim())"; $c = $all[[int]$c.ParentProcessId]; $k++ }
-      $did += "$($p.ProcessName) pid $($p.Id) started $(try { $p.StartTime.ToString('HH:mm:ss.fff') } catch { '?' }): $($chain -join ' <- ')"
+      $did += "wsl pid $($p.Id) started $(try { $p.StartTime.ToString('HH:mm:ss.fff') } catch { '?' }) (parent pid $parent$(if (-not $all[$parent]) { ', gone' })): $($chain -join ' <- ')"
     }
   }
-  foreach ($h in WslPrompts) { $did += "closed $([ProofInput]::Describe($h))"; [void][ProofInput]::Close($h) }
-  foreach ($p in $ps) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
-  if ($did.Count) {
-    Start-Sleep 1
-    foreach ($h in WslPrompts) { $did += "closed again $([ProofInput]::Describe($h))"; [void][ProofInput]::Close($h) }
-  }
+  foreach ($h in WslPrompts) { if ([ProofInput]::Park($h)) { $did += "parked (minimized) $([ProofInput]::Describe($h))" } }
   return $did
 }

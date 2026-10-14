@@ -315,4 +315,9 @@ public static class ProofInput
     public static string Title(IntPtr h) { StringBuilder t = new StringBuilder(512); GetWindowText(h, t, 512); return t.ToString(); }
     // Asks a window to close, as its close box does (WM_CLOSE).
     public static bool Close(IntPtr h) { return PostMessage(h, 0x0010, IntPtr.Zero, IntPtr.Zero); }
+    [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
+    [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
+    // Minimizes a window without giving anything the front (SW_SHOWMINNOACTIVE);
+    // false when it was minimized already.
+    public static bool Park(IntPtr h) { if (IsIconic(h)) return false; ShowWindow(h, 7); return true; }
 }

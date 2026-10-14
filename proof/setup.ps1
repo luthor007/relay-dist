@@ -12,7 +12,7 @@ Log "session: $((quser 2>&1) -join ' | ')"
 # The ARM image's Microsoft account window takes the foreground from everything.
 Get-Process WWAHost -ErrorAction SilentlyContinue | Stop-Process -Force
 # The ARM image's WSL prompt (see QuietWsl): what is there before Relay is
-# installed is the image's own; a watcher closes any later one for the rest of
+# installed is the image's own; a watcher minimizes any later one for the rest of
 # the job and keeps who started it in out\wsl-watch.log.
 $w = @(QuietWsl)
 Log "wsl before Relay is installed: $(if ($w.Count) { $w -join ' | ' } else { 'none' })"
