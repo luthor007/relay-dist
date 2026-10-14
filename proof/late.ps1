@@ -66,11 +66,9 @@ Result 'L1-missing-said' $l1 'with no Claude Code on the PC, the desk is told so
 # puts it (the user's Environment key, then the settings broadcast): every
 # program started from now on finds it; relayd was started before.
 npm install -g --prefix 'C:\late-npm' '@anthropic-ai/claude-code' *> "$Out\npm-install.txt"
-$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-[Environment]::SetEnvironmentVariable('Path', (@($userPath, 'C:\late-npm') | Where-Object { $_ }) -join ';', 'User')
 $claude = @('C:\late-npm\claude.cmd', 'C:\late-npm\claude.ps1', 'C:\late-npm\claude.exe') | Where-Object { Test-Path $_ } | Select-Object -First 1
 $ver = if ($claude) { (& $claude --version 2>&1 | Select-Object -First 1) } else { '' }
-Log "claude installed late: $claude ($ver); user Path now ends with C:\late-npm"
+Log "claude installed late: $claude ($ver)"
 # Its first run asks nothing (as the proof's setup does).
 New-Item -ItemType Directory -Force "$HOME\.claude" | Out-Null
 $v = ($ver -replace '\s.*$', '')
@@ -81,6 +79,10 @@ $state = [ordered]@{ hasCompletedOnboarding = $true; lastOnboardingVersion = $v;
 [IO.File]::WriteAllText("$HOME\.claude.json", ($state | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding $false))
 $envs = @{ ANTHROPIC_BASE_URL = "http://127.0.0.1:$StubPort"; ANTHROPIC_API_KEY = $key; CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1'; DISABLE_AUTOUPDATER = '1' }
 [IO.File]::WriteAllText("$HOME\.claude\settings.json", (@{ env = $envs } | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding $false))
+
+# Then onto the person's Path, as the installer's last step.
+$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+[Environment]::SetEnvironmentVariable('Path', (@($userPath, 'C:\late-npm') | Where-Object { $_ }) -join ';', 'User')
 
 # --- L2: a job from the desk runs the Claude Code installed late ------------
 $t0 = Get-Date
