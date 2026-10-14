@@ -10,9 +10,11 @@
 # L2: Claude Code installed into a new folder on the person's Path after
 #     relayd started: a job started from the desk runs it.
 # L3: a job that cannot start says why, with what its terminal showed.
+# L4: Claude Code's hooks are added once it is on the PC, so its prompts
+#     reach the desk and the phone.
 param([Parameter(Mandatory = $true)][string]$Tag, [string]$Repo = 'luthor007/relay-dist')
 . "$PSScriptRoot\lib.ps1"
-Expect 'L0-engine', 'L1-missing-said', 'L2-installed-late-runs', 'L3-why-said'
+Expect 'L0-engine', 'L1-missing-said', 'L2-installed-late-runs', 'L3-why-said', 'L4-hooks-late'
 
 Log "os=$([Environment]::OSVersion.VersionString) arch=$env:PROCESSOR_ARCHITECTURE tag=$Tag"
 Get-Process WWAHost -ErrorAction SilentlyContinue | Stop-Process -Force
@@ -81,8 +83,10 @@ $envs = @{ ANTHROPIC_BASE_URL = "http://127.0.0.1:$StubPort"; ANTHROPIC_API_KEY 
 [IO.File]::WriteAllText("$HOME\.claude\settings.json", (@{ env = $envs } | ConvertTo-Json -Depth 6), (New-Object Text.UTF8Encoding $false))
 
 # --- L2: a job from the desk runs the Claude Code installed late ------------
+$t0 = Get-Date
 $open = Api POST '/v1/sessions' @{ folder = 'C:\late\held'; view = 'terminal'; name = 'late-held'; runtime = 'claude-code' } 60
-Log "L2 open: $(if ($open) { $open | ConvertTo-Json -Compress -Depth 5 } else { "refused: $($script:LastApiError)" })"
+$took = [int]((Get-Date) - $t0).TotalMilliseconds
+Log "L2 open ($took ms): $(if ($open) { $open | ConvertTo-Json -Compress -Depth 5 } else { "refused: $($script:LastApiError)" })"
 $id = if ($open) { $open.opened.native_id } else { '' }
 if (-not $id -and $open) { $id = $open.opened.session -replace '^claude-code/', '' }
 $screen = ''
@@ -113,5 +117,10 @@ Rename-Item $broke $bad -ErrorAction SilentlyContinue
 Log "L3 open: $(if ($open3) { $open3 | ConvertTo-Json -Compress -Depth 5 } else { "refused: $said3" })"
 $l3 = [bool]((-not $open3) -and $said3 -match 'did not start|didn.t start|n.a pas d.marr')
 Result 'L3-why-said' $l3 'a job whose Claude Code ends as it starts is refused with what its terminal said' $(if ($open3) { 'answered 201 for a Claude Code that cannot run' } elseif (-not $l3) { "refused, but not saying it did not start: $said3" } else { '' })
+
+# --- L4: its hooks, added once it arrived --------------------------------------
+$hooks = WaitFor { $j = Get-Content "$HOME\.claude\settings.json" -Raw -ErrorAction SilentlyContinue; if ($j -and $j -match 'session-hook') { $j } else { $null } } 40 1
+Copy-Item "$HOME\.claude\settings.json" "$Out\claude-settings-end.json" -ErrorAction SilentlyContinue
+Result 'L4-hooks-late' ([bool]$hooks) "Claude Code's hooks were added after it arrived on the PC" $(if (-not $hooks) { 'no session-hook in ~/.claude/settings.json 40 s after the last job' } else { '' })
 
 Copy-Item "$RelayDir\Logs\*" $Out -ErrorAction SilentlyContinue
