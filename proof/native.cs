@@ -310,4 +310,9 @@ public static class ProofInput
     }
 
     public static RECT Rect(IntPtr h) { RECT r; GetWindowRect(h, out r); return r; }
+
+    [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
+    public static string Title(IntPtr h) { StringBuilder t = new StringBuilder(512); GetWindowText(h, t, 512); return t.ToString(); }
+    // Asks a window to close, as its close box does (WM_CLOSE).
+    public static bool Close(IntPtr h) { return PostMessage(h, 0x0010, IntPtr.Zero, IntPtr.Zero); }
 }

@@ -232,3 +232,36 @@ function BringDesk {
   }
   return [ProofInput]::Front()
 }
+
+# The windows-11-arm image's WSL is its inbox stub: whatever starts wsl.exe
+# there gets "Windows Subsystem for Linux must be updated ... Press any key to
+# install" in a window of its own (Windows Terminal hosts it), which can take
+# the front and is no window of Relay's. QuietWsl records who started it (its
+# chain of parents, as Windows has them), closes its window and stops it, and
+# returns one line per thing it did. Git Bash's bash.exe is left alone; only
+# System32's (WSL's launcher) is stopped.
+function WslPrompts {
+  @(foreach ($p in 'WindowsTerminal', 'wsl', 'bash', 'conhost', 'OpenConsole') {
+      [ProofInput]::WindowsOf($p) | Where-Object { [ProofInput]::Title($_) -match '\\system32\\(wsl|bash)\.exe$|^wsl(\.exe)?$' }
+    })
+}
+function QuietWsl {
+  $did = @()
+  $ps = @(Get-Process wsl -ErrorAction SilentlyContinue) +
+    @(Get-Process bash -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$env:SystemRoot\System32\*" })
+  if ($ps.Count) {
+    $all = @{}; Get-CimInstance Win32_Process | ForEach-Object { $all[[int]$_.ProcessId] = $_ }
+    foreach ($p in $ps) {
+      $chain = @(); $c = $all[[int]$p.Id]; $k = 0
+      while ($c -and $k -lt 6) { $chain += "$($c.Name)[$($c.ProcessId)] $((("$($c.CommandLine)") -replace '\s+', ' ').Trim())"; $c = $all[[int]$c.ParentProcessId]; $k++ }
+      $did += "$($p.ProcessName) pid $($p.Id) started $(try { $p.StartTime.ToString('HH:mm:ss.fff') } catch { '?' }): $($chain -join ' <- ')"
+    }
+  }
+  foreach ($h in WslPrompts) { $did += "closed $([ProofInput]::Describe($h))"; [void][ProofInput]::Close($h) }
+  foreach ($p in $ps) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+  if ($did.Count) {
+    Start-Sleep 1
+    foreach ($h in WslPrompts) { $did += "closed again $([ProofInput]::Describe($h))"; [void][ProofInput]::Close($h) }
+  }
+  return $did
+}

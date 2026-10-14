@@ -97,17 +97,28 @@ foreach ($p in $presses) {
 }
 
 # --- Alt+Space, from anywhere -----------------------------------------------
+# A WSL prompt of the ARM image's (QuietWsl) is closed first; one that takes
+# the front during the press is no answer of Relay's, so it is closed and the
+# press made once more, and the note says so.
 $desk = DeskWindow
-$n = (AppLogLines).Count
-$t0 = NowMs
-$sent = [ProofInput]::Chord([uint16[]]@($VK.ALT, $VK.SPACE))
-Start-Sleep 3
-$frontH = [ProofInput]::GetForegroundWindow()
-$composer = ([ProofInput]::FrontProcess() -eq 'RelayApp') -and ($frontH -ne $desk)
+$note = ''
+foreach ($try in 1, 2) {
+  foreach ($d in QuietWsl) { Log "wsl (alt+space $try): $d" }
+  if ($try -eq 2) { [void](BringDesk) }
+  $n = (AppLogLines).Count
+  $t0 = NowMs
+  $sent = [ProofInput]::Chord([uint16[]]@($VK.ALT, $VK.SPACE))
+  Start-Sleep 3
+  $frontH = [ProofInput]::GetForegroundWindow()
+  $composer = ([ProofInput]::FrontProcess() -eq 'RelayApp') -and ($frontH -ne $desk)
+  if ($composer -or ($try -eq 2) -or ([ProofInput]::Title($frontH) -notmatch '\\system32\\(wsl|bash)\.exe$')) { break }
+  $note = " (pressed again: the image's WSL prompt took the front the first time)"
+  Log "alt+space: the front was the image's WSL prompt ($([ProofInput]::Front())); closing it and pressing again"
+}
 $hot = @(AppLogSince $n | Select-String 'hotkey:|composer' | ForEach-Object { "$_" })
 Log "alt+space sent=$sent front=$([ProofInput]::Front()) desk=$([ProofInput]::Describe($desk)) log=$($hot -join ' | ')"
 Shot 'desk-K6-alt-space'
-Result 'K6-alt-space' $composer "Alt+Space (SendInput) brings the composer to the front" $(if (-not $composer) { "front is $([ProofInput]::Front()); sent=$sent" } else { '' })
+Result 'K6-alt-space' $composer "Alt+Space (SendInput) brings the composer to the front$note" $(if (-not $composer) { "front is $([ProofInput]::Front()); sent=$sent" } else { '' })
 [void][ProofInput]::Chord([uint16[]]@($VK.ESC))
 
 # --- What each press did ----------------------------------------------------

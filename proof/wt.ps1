@@ -72,9 +72,21 @@ if (-not $job) {
 # Found by its name through UI Automation and clicked with a real click, the
 # desk in front: the right to the front is the desk's to pass on. The split
 # view's new tab (Ctrl+N) fills itself with the open jobs, each pane with its
-# "Open in Windows Terminal"; else the job is opened from Work.
+# "Open in Windows Terminal"; else the job is opened from Work. WebView2 can
+# take a while to put a page's controls in the UI Automation tree (Windows
+# Server 2025 drew the control and the tree had not got it 6 s later), so the
+# job's own page is given 30 s, polled, and a fallback says what it saw.
+$OpenLike = '*Open in*Terminal*'
+function WaitOpen([string]$where, [int]$secs) {
+  $t = Get-Date
+  $e = FindLike $OpenLike $secs
+  $took = [Math]::Round(((Get-Date) - $t).TotalSeconds, 1)
+  if ($e) { Log "desk: '$($e.Current.Name)' found on $where after $took s" }
+  else { Log "desk: no '$OpenLike' on $where after $took s" }
+  return $e
+}
 function FindOpen {
-  $e = FindLike '*Open in*Terminal*' 4
+  $e = WaitOpen 'the screen shown' 4
   if ($e) { return $e }
   # Work, then its Split view: a pane for each open job, each with its tools.
   foreach ($step in @(@('Work', 'Split view'), @('Work', '*done today*'))) {
@@ -83,15 +95,19 @@ function FindOpen {
       if ($el) { Log "desk: clicking '$($el.Current.Name)'"; [void](ClickElement $el); Start-Sleep 3 } else { Log "desk: no '$name' to click" }
     }
     Shot "wt-find-$($step[-1] -replace '\W', '')"
-    $e = FindLike '*Open in*Terminal*' 5
+    $e = WaitOpen "'$($step[-1])'" 8
     if ($e) { return $e }
     foreach ($way in '*proof-held*', '*hello from the proof*') {
       $row = FindLike $way 10
       if ($row) {
-        Log "desk: clicking '$($row.Current.Name)'"; [void](ClickElement $row); Start-Sleep 4
+        Log "desk: clicking '$($row.Current.Name)'"; [void](ClickElement $row); Start-Sleep 2
+        $e = WaitOpen "the job's page" 30
         Shot 'wt-find-job'
-        $e = FindLike '*Open in*Terminal*' 6
         if ($e) { return $e }
+        # What the tree does hold there, for the log.
+        $names = @(foreach ($w in RelayWindows) { foreach ($x in $w.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)) { try { $x.Current.Name } catch {} } }) |
+          Where-Object { $_ -match 'Open|Terminal|proof' } | Select-Object -Unique -First 15
+        Log "desk: the job's page in UI Automation holds: $($names -join ' | ')"
         break
       }
     }
@@ -115,7 +131,12 @@ function WtText($h) {
   } catch {}
   return ''
 }
+# A window is the job's when its own text is the held job's: its prompt, its
+# name, or Claude Code's screen. Any other window that turns up (the ARM
+# image's WSL prompt, say) is logged and left out of the judgement.
+$JobText = 'hello from the proof|proof-held|for shortcuts|Claude Code'
 function OpenOnce([string]$tag, $known) {
+  foreach ($d in QuietWsl) { Log "wsl (before open $tag): $d" }
   $front = BringDesk
   $btn = FindOpen
   $via = 'desk'
@@ -125,35 +146,56 @@ function OpenOnce([string]$tag, $known) {
   } else {
     # The control was not found: relayd's own call, the desk in front.
     $via = 'api'
+    Log "desk: falling back to relayd's own call (POST /v1/terminals/$($job.id)/outside); T2 fails and T4 cannot be judged"
     Shot "wt-$tag-no-control"
     [void](Api POST "/v1/terminals/$($job.id)/outside" @{})
   }
-  $new = WaitFor { $n = @([ProofInput]::WindowsOf('WindowsTerminal') | Where-Object { $known -notcontains $_ }); if ($n.Count -gt 0) { $n } else { $null } } 20 0.5
-  Start-Sleep 2
-  $new = if ($new) { @($new) } else { @() }
-  Start-Sleep 3
-  $texts = @($new | ForEach-Object { WtText $_ })
-  $o = [ordered]@{ via = $via; found = [bool]$btn; control = $(if ($btn) { $btn.Current.Name } else { '' }); deskFront = $front; new = @($new | ForEach-Object { [ProofInput]::Describe($_) }); newHandles = $new; text = @($texts | ForEach-Object { $_.Substring([Math]::Max(0, $_.Length - 400)) }); front = [ProofInput]::Front(); frontHandle = [ProofInput]::GetForegroundWindow() }
+  # Up to 25 s for a window that shows the job; once one does, 3 s more for
+  # the front to settle.
+  $jobs = @(); $others = @{}; $seenAt = $null
+  $end = (Get-Date).AddSeconds(25)
+  while ((Get-Date) -lt $end) {
+    foreach ($d in QuietWsl) { Log "wsl (open $tag): $d" }
+    $jobs = @()
+    foreach ($h in @([ProofInput]::WindowsOf('WindowsTerminal') | Where-Object { $known -notcontains $_ })) {
+      $t = WtText $h
+      if ($t -match $JobText) { $jobs += , @{ h = $h; text = $t } } else { $others["$h"] = "$([ProofInput]::Describe($h)) shows '$($t.Substring([Math]::Max(0, $t.Length - 160)))'" }
+    }
+    if ($jobs.Count -and -not $seenAt) { $seenAt = Get-Date; $end = $seenAt.AddSeconds(3) }
+    Start-Sleep -Milliseconds 700
+  }
+  foreach ($k in $others.Keys) { if (-not ($jobs | Where-Object { "$($_.h)" -eq $k })) { Log "open ${tag}: left out (not the job's): $($others[$k])" } }
+  $o = [ordered]@{
+    via = $via; found = [bool]$btn; control = $(if ($btn) { $btn.Current.Name } else { '' }); deskFront = $front
+    new = @($jobs | ForEach-Object { [ProofInput]::Describe($_.h) }); newHandles = @($jobs | ForEach-Object { $_.h })
+    others = @($others.Keys | Where-Object { $k = $_; -not ($jobs | Where-Object { "$($_.h)" -eq $k }) } | ForEach-Object { [IntPtr][long]$_ })
+    text = @($jobs | ForEach-Object { $_.text.Substring([Math]::Max(0, $_.text.Length - 400)) })
+    front = [ProofInput]::Front(); frontHandle = [ProofInput]::GetForegroundWindow()
+  }
   Log "open ${tag}: $(($o | ConvertTo-Json -Compress -Depth 3))"
   Shot "wt-$tag"
   return $o
 }
 
 # Every Windows Terminal window there before (the runner keeps one of its own).
+foreach ($d in QuietWsl) { Log "wsl (before T2): $d" }
 $known = @([ProofInput]::WindowsOf('WindowsTerminal'))
 Log "Windows Terminal windows before: $(@($known | ForEach-Object { [ProofInput]::Describe($_) }) -join '; ')"
 $first = OpenOnce 'first' $known
 $named = if ($first.found) { $first.control } else { '' }
-Result 'T2-desk-control' ($first.found -and $named -like '*Windows Terminal*') "the desk shows 'Open in Windows Terminal' for the held job$(if ($named) { " ('$named')" })" $(if (-not $first.found) { "no 'Open in ... Terminal' control in the desk's UI Automation tree (looked on the screen shown, Work's Split view, and the job from Work); relayd's own call was used for the rest" } elseif ($named -notlike '*Windows Terminal*') { "the control is named '$named', a Mac's word" } else { '' })
+Result 'T2-desk-control' ($first.found -and $named -like '*Windows Terminal*') "the desk shows 'Open in Windows Terminal' for the held job$(if ($named) { " ('$named')" })" $(if (-not $first.found) { "no 'Open in ... Terminal' control in the desk's UI Automation tree (looked on the screen shown, Work's Split view, and 30 s on the job's page from Work); relayd's own call was used for the rest" } elseif ($named -notlike '*Windows Terminal*') { "the control is named '$named', a Mac's word" } else { '' })
 $opened = $first.newHandles.Count -gt 0
-$showsJob = @($first.text | Where-Object { $_ -match 'hello from the proof|for shortcuts|Claude Code' }).Count -gt 0
-Result 'T3-wt-opens' ($opened -and $showsJob) "a new Windows Terminal window opens on the job (via the $($first.via)): $($first.new -join '; ')" $(if (-not $opened) { "no new WindowsTerminal window 20 s after the press$(if ($script:LastApiError) { "; last API error: $($script:LastApiError)" })" } elseif (-not $showsJob) { "the new window does not show the job; it shows: '$(($first.text -join ' | ') -replace '^.*(.{250})$', '$1')'" } else { '' })
+Result 'T3-wt-opens' $opened "a new Windows Terminal window opens on the job (via the $($first.via)): $($first.new -join '; ')" $(if (-not $opened) { "no new Windows Terminal window showed the job 25 s after the press$(if ($first.others.Count) { " (other new windows, not the job's: $($first.others.Count), in out\proof.log)" })$(if ($script:LastApiError) { "; last API error: $($script:LastApiError)" })" } else { '' })
 $inFront = $opened -and ($first.newHandles -contains $first.frontHandle)
-Result 'T4-wt-in-front' $inFront "the new Windows Terminal window is in front" $(if (-not $inFront) { "in front: $($first.front)" } else { '' })
+if ($first.via -eq 'api') {
+  Result 'T4-wt-in-front' $null "the new Windows Terminal window is in front" "the desk's control was not found (T2), so the window was opened by relayd's own call, which has no front to pass on; only a press on the desk can show this (in front: $($first.front))"
+} else {
+  Result 'T4-wt-in-front' $inFront "the new Windows Terminal window is in front" $(if (-not $inFront) { "in front: $($first.front)" } else { '' })
+}
 
 # Something else in front, then Open again: the same window comes forward.
 Start-Process notepad; Start-Sleep 3
-$again = OpenOnce 'again' ($known + $first.newHandles)
+$again = OpenOnce 'again' ($known + $first.newHandles + $first.others)
 Get-Process notepad -ErrorAction SilentlyContinue | Stop-Process -Force
 $same = $opened -and ($again.newHandles.Count -eq 0) -and ($first.newHandles -contains $again.frontHandle)
-Result 'T5-wt-again-same-window' $same "Open again brings the same Windows Terminal window forward, no second one" $(if (-not $opened) { 'no window was opened the first time (T3)' } elseif (-not $same) { "new windows the second time: $($again.newHandles.Count); in front: $($again.front)" } else { '' })
+Result 'T5-wt-again-same-window' $same "Open again brings the same Windows Terminal window forward, no second one (via the $($again.via))" $(if (-not $opened) { 'no window was opened the first time (T3)' } elseif (-not $same) { "new windows showing the job the second time: $($again.newHandles.Count); in front: $($again.front)" } else { '' })

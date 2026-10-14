@@ -11,6 +11,12 @@ Log "webview2=$($wv.pv) node=$(node --version) git=$(git --version) user=$env:US
 Log "session: $((quser 2>&1) -join ' | ')"
 # The ARM image's Microsoft account window takes the foreground from everything.
 Get-Process WWAHost -ErrorAction SilentlyContinue | Stop-Process -Force
+# The ARM image's WSL prompt (see QuietWsl): what is there before Relay is
+# installed is the image's own; a watcher closes any later one for the rest of
+# the job and keeps who started it in out\wsl-watch.log.
+$w = @(QuietWsl)
+Log "wsl before Relay is installed: $(if ($w.Count) { $w -join ' | ' } else { 'none' })"
+Start-Process powershell -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSScriptRoot\wslwatch.ps1`"" -WindowStyle Hidden -WorkingDirectory (Get-Location).Path
 # A test PC never reaches Relay's servers or counts as a customer.
 Add-Content -Path "$env:SystemRoot\System32\drivers\etc\hosts" -Value "`r`n127.0.0.1 relay.glass"
 ipconfig /flushdns | Out-Null
