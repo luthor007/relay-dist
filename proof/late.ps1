@@ -25,6 +25,12 @@ Get-Process WWAHost -ErrorAction SilentlyContinue | Stop-Process -Force
 foreach ($d in QuietWsl) { Log "wsl: $d" }
 Add-Content -Path "$env:SystemRoot\System32\drivers\etc\hosts" -Value "`r`n127.0.0.1 relay.glass"
 ipconfig /flushdns | Out-Null
+# Relay for Windows 0.1.4 installs Claude Code by itself; this proof is about
+# one the person installs while Relay runs, so Relay's own is off here
+# (run=fresh proves that one). An older build has no such setup and reads
+# nothing of this.
+$env:RELAY_RUNTIME_SETUP = '0'
+[Environment]::SetEnvironmentVariable('RELAY_RUNTIME_SETUP', '0', 'User')
 
 $pre = (Get-Command claude -ErrorAction SilentlyContinue).Source
 Log "claude before anything: $(if ($pre) { $pre } else { 'none' })"

@@ -19,9 +19,9 @@ on:
         description: "Release tag holding RelaySetup*.exe (a draft is fine)"
         required: true
       run:
-        description: "smoke: the installer; tests: Relay's own Windows tests from the tag; both; proof: real Claude Code, real keys, real Windows Terminal; late: a desk job with Claude Code missing, then installed while Relay runs"
+        description: "smoke: the installer; tests: Relay's own Windows tests from the tag; both; proof: real Claude Code, real keys, real Windows Terminal; late: a desk job with Claude Code missing, then installed while Relay runs; fresh: a PC with no coding tools, Relay installs Claude Code and Codex, then a desk job runs and registers"
         type: choice
-        options: [smoke, tests, both, proof, late]
+        options: [smoke, tests, both, proof, late, fresh]
         default: smoke
 
 permissions:
@@ -705,6 +705,47 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: late-${{ matrix.os }}-${{ matrix.start }}
+          path: out
+          retention-days: 3
+
+      - name: Verdict
+        if: always()
+        run: |
+          Set-ExecutionPolicy -Scope Process Bypass -Force
+          .\proof\verdict.ps1
+
+  # A PC with no coding tools at all (run=fresh, Relay for Windows 0.1.4 on):
+  # Relay installs Claude Code and Codex by itself, the desk is offered both,
+  # and a job started from the desk runs that Claude Code and registers, with
+  # no restart. The downloads are the vendors' own.
+  fresh:
+    if: inputs.run == 'fresh'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, windows-2022, windows-11-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: powershell
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: A fresh PC, Relay installs Claude Code and Codex, then a desk job
+        continue-on-error: true
+        timeout-minutes: 22
+        run: |
+          Set-ExecutionPolicy -Scope Process Bypass -Force
+          .\proof\fresh.ps1 -Tag "${{ inputs.tag }}" -Repo "${{ github.repository }}"
+
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fresh-${{ matrix.os }}
           path: out
           retention-days: 3
 
