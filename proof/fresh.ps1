@@ -129,8 +129,11 @@ if ($open) {
     Start-Sleep 2
   }
 }
-$rd2 = Get-Process relayd -ErrorAction SilentlyContinue | Select-Object -First 1
-$same = [bool]($rd2 -and $rd2.StartTime -eq $relaydStart)
+# The same relayd still runs, and relayw started it once: a held job's holder
+# is a relayd.exe of its own, so the process list alone cannot say.
+$starts = @()
+try { $starts = @((Get-Content "$RelayDir\Logs\restarts.json" -Raw | ConvertFrom-Json).starts) } catch {}
+$same = [bool]((Get-Process -Id $rd.Id -ErrorAction SilentlyContinue) -and $starts.Count -le 1)
 Log "F4 job: $(if ($job) { "$($job.id) ended=$($job.ended)" } else { 'none' }) relayd same run: $same screen: $(Tail $screen)"
 $f4 = [bool]($job -and -not $job.ended -and $screen -match $ready -and $same)
 Result 'F4-desk-job-runs' $f4 'a job from the desk runs the Claude Code Relay installed, with no restart' $(if (-not $open) { "refused: $($script:LastApiError)" } elseif (-not $job) { 'no job listed' } elseif ($job.ended) { "the job ended at once; its terminal: '$(Tail $screen 200)'" } elseif (-not $same) { 'relayd was restarted on the way' } elseif (-not $f4) { "never showed Claude Code ready: '$(Tail $screen 200)'" } else { '' })
